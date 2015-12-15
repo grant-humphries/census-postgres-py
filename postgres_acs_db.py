@@ -6,6 +6,7 @@ import urllib2
 import argparse
 from pprint import pprint
 from os.path import dirname, exists, join
+from collections import defaultdict
 
 import xlrd
 from sqlalchemy import create_engine, Column, Table, Integer, String, MetaData
@@ -27,6 +28,8 @@ STATE_DICT = {
 
 def download_acs_data():
     """"""
+
+    'ACS_{span}yr_Seq_Table_Number_Lookup.txt'
 
     acs_url = 'http://www2.census.gov/programs-surveys/' \
               'acs/summary_file/{yr}/data'.format(yr=ops.acs_year)
@@ -60,9 +63,7 @@ def download_acs_data():
 def download_with_progress(url, dir):
     """"""
 
-    # code adapted from:
-    # http://stackoverflow.com/questions/22676/
-    # how-do-i-download-a-file-over-http-using-python
+    # code adapted from: http://stackoverflow.com/questions/22676
 
     file_name = url.split('/')[-1]
     file_path = join(dir, file_name)
@@ -120,15 +121,23 @@ def create_geoheader():
     sheet = book.sheet_by_index(0)
 
     meta_fields = []
-    for rx in xrange(sheet.ncols):
+    blank_counter = 1
+    for cx in xrange(sheet.ncols):
         field = {
-            'name': sheet.cell_value(0, rx).lower(),
-            'comment': sheet.cell_value(1, rx)
+            'name': sheet.cell_value(0, cx).lower(),
+            'comment': sheet.cell_value(1, cx)
         }
         if field['name'].upper() in PRIMARY_KEY:
             field['pk'] = True
         else:
             field['pk'] = False
+
+        # there are multiple fields called 'blank' that are reserved
+        # for future use, but columns in the same table cannot have
+        # the same name
+        if field['name'] == 'blank':
+            field['name'] += str(blank_counter)
+            blank_counter += 1
 
         meta_fields.append(field)
 
@@ -172,6 +181,44 @@ def create_geoheader():
 def create_acs_tables():
     """"""
 
+    base_ix = 6
+    meta_tables = {}
+    seq_schema_dir = join(ops.data_dir, 'seq')
+
+    for i, seq in enumerate(os.listdir(seq_schema_dir)):
+        seq_path = join(seq_schema_dir, seq)
+        book = xlrd.open_workbook(seq_path)
+        sheet = book.sheet_by_name('E')
+
+        if i == 0:
+            base_cols = []
+            for cx in xrange(base_ix):
+                meta_field = {
+                    'name': sheet.cell_value(0, cx),
+                    'comment': None
+                }
+                base_cols.append(meta_field)
+
+        # create copy of base_cols so original is not modified
+        fields = list(base_cols)
+        for cx in xrange(base_ix, sheet.ncols):
+            table, col = sheet.cell_value(0, cx).split('_')
+            comment = sheet.cell_value(1, cx)
+            col_name = '_{}'.format(int(col))
+
+            meta_field = {
+                'name': col_name,
+                'comment': comment
+            }
+            fields.append(meta_field)
+            meta_tables[table] = fields
+
+    for
+
+
+def detect_csv_data_types():
+    """"""
+
     pass
 
 
@@ -202,9 +249,9 @@ def process_options(arg_list=None):
     )
     parser.add_argument(
         '-dd', '--data_directory',
-        default=os.getcwd(),
+        default=join(os.getcwd(), 'data'),
         dest='data_dir',
-        help='file path at which downloaded cenus data is to be saved'
+        help='file path at which downloaded census data is to be saved'
     )
     parser.add_argument(
         '-H', '--host',
@@ -246,7 +293,8 @@ def main():
 
     # download_acs_data()
     # create_database_and_schema()
-    create_geoheader()
+    # create_geoheader()
+    create_acs_tables()
 
 if __name__ == '__main__':
     main()
