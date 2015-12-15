@@ -6,7 +6,6 @@ import urllib2
 import argparse
 from pprint import pprint
 from os.path import dirname, exists, join
-from collections import defaultdict
 
 import xlrd
 from sqlalchemy import create_engine, Column, Table, Integer, String, MetaData
@@ -26,13 +25,14 @@ STATE_DICT = {
     'WA': 'Washington'
 }
 
+
 def download_acs_data():
     """"""
 
-    'ACS_{span}yr_Seq_Table_Number_Lookup.txt'
-
+    # get raw census data in text delimited form, the data has been
+    # grouped into what the Census Bureau calls 'sequences'
     acs_url = 'http://www2.census.gov/programs-surveys/' \
-              'acs/summary_file/{yr}/data'.format(yr=ops.acs_year)
+              'acs/summary_file/{yr}'.format(yr=ops.acs_year)
 
     for geog in GEOGRAPHY:
         geog_dir = join(ops.data_dir, geog.lower())
@@ -42,28 +42,39 @@ def download_acs_data():
 
         for st in ops.states:
             st_name = STATE_DICT[st]
-            geog_url = '{base_url}/{span}_year_by_state/' \
+            geog_url = '{base_url}/data/{span}_year_by_state/' \
                        '{state}_{geography}.zip'.format(
-                           base_url=acs_url, span=ops.span,
-                           state=st_name, geography=geog)
+                            base_url=acs_url, span=ops.span,
+                            state=st_name, geography=geog)
 
             geog_path = download_with_progress(geog_url, geog_dir)
             with zipfile.ZipFile(geog_path, 'r') as z:
+                print 'unzipping...'
                 z.extractall(dirname(geog_path))
 
-    schema_url = '{base_url}/{yr}_{span}yr_' \
+    # the raw csv doesn't have field names for metadata, the templates
+    # downloaded below provide that (but only the geoheader metadata
+    # will be used by this process)
+    schema_url = '{base_url}/data/{yr}_{span}yr_' \
                  'Summary_FileTemplates.zip'.format(
-                     base_url=acs_url, yr=ops.acs_year, span=ops.span)
+                      base_url=acs_url, yr=ops.acs_year, span=ops.span)
 
     schema_path = download_with_progress(schema_url, ops.data_dir)
     with zipfile.ZipFile(schema_path, 'r') as z:
+        print 'unzipping...'
         z.extractall(dirname(schema_path))
+
+    # download the lookup table that contains information as to how to
+    # extract the ACS tables from the sequences
+    lookup_url = '{base_url}/documentation/user_tools/' \
+                 '{lookup}'.format(base_url=acs_url, lookup=ops.lookup_file)
+    download_with_progress(lookup_url, ops.data_dir)
 
 
 def download_with_progress(url, dir):
     """"""
 
-    # code adapted from: http://stackoverflow.com/questions/22676
+    # function adapted from: http://stackoverflow.com/questions/22676
 
     file_name = url.split('/')[-1]
     file_path = join(dir, file_name)
@@ -85,7 +96,7 @@ def download_with_progress(url, dir):
 
         status = '{0:10d}  [{2:3.2f}%]'.format(
             file_size_dl, file_size, file_size_dl * 100. / file_size)
-        status += chr(8) * (len(status)+1)
+        status += chr(8) * (len(status) + 1)
         print status,
 
     f.close()
@@ -96,24 +107,17 @@ def download_with_progress(url, dir):
 def create_database_and_schema():
     """"""
 
-    pg_conn_str = 'postgres://{user}:{pw}@{host}/{db}'.format(
-        user=ops.user, pw=ops.password, host=ops.host, db=ops.dbname)
-
-    engine = create_engine(pg_conn_str)
+    engine = ops.engine
     if not database_exists(engine.url):
         create_database(engine.url)
 
-    engine.execute("DROP SCHEMA IF EXISTS {} CASCADE;".format(ops.schema))
-    engine.execute("CREATE SCHEMA {};".format(ops.schema))
-
-    return engine
+    engine.execute("DROP SCHEMA IF EXISTS {} CASCADE;".format(
+        ops.metadata.schema))
+    engine.execute("CREATE SCHEMA {};".format(ops.metadata.schema))
 
 
 def create_geoheader():
     """"""
-
-    engine = create_database_and_schema()
-    metadata = MetaData(bind=engine, schema=ops.schema)
 
     geo_xls = '{yr}_SFGeoFileTemplate.xls'.format(yr=ops.acs_year)
     geo_schema = join(ops.data_dir, geo_xls)
@@ -124,10 +128,11 @@ def create_geoheader():
     blank_counter = 1
     for cx in xrange(sheet.ncols):
         field = {
-            'name': sheet.cell_value(0, cx).lower(),
-            'comment': sheet.cell_value(1, cx)
+            'id': sheet.cell_value(0, cx).lower(),
+            'comment': sheet.cell_value(1, cx),
+            'type': String
         }
-        if field['name'].upper() in PRIMARY_KEY:
+        if field['id'].upper() in PRIMARY_KEY:
             field['pk'] = True
         else:
             field['pk'] = False
@@ -135,8 +140,8 @@ def create_geoheader():
         # there are multiple fields called 'blank' that are reserved
         # for future use, but columns in the same table cannot have
         # the same name
-        if field['name'] == 'blank':
-            field['name'] += str(blank_counter)
+        if field['id'] == 'blank':
+            field['id'] += str(blank_counter)
             blank_counter += 1
 
         meta_fields.append(field)
@@ -151,20 +156,10 @@ def create_geoheader():
             reader = csv.reader(geo_data)
 
             if table is None:
-                test_row = next(reader)
-                geo_data.seek(0)
-
-                for field, ex in zip(meta_fields, test_row):
-                    if ex.isdigit():
-                        field['type'] = Integer
-                    else:
-                        field['type'] = String
-
                 table = Table(
-                    'geoheader', metadata,
+                    'geoheader', ops.metadata,
                     *(Column(
-                        f['name'],
-                        String,
+                        f['id'], f['type'],
                         primary_key=f['pk'],
                         doc=f['comment'])
                       for f in meta_fields))
@@ -181,45 +176,92 @@ def create_geoheader():
 def create_acs_tables():
     """"""
 
-    base_ix = 6
-    meta_tables = {}
-    seq_schema_dir = join(ops.data_dir, 'seq')
-
-    for i, seq in enumerate(os.listdir(seq_schema_dir)):
-        seq_path = join(seq_schema_dir, seq)
-        book = xlrd.open_workbook(seq_path)
-        sheet = book.sheet_by_name('E')
-
-        if i == 0:
-            base_cols = []
-            for cx in xrange(base_ix):
-                meta_field = {
-                    'name': sheet.cell_value(0, cx),
-                    'comment': None
+    acs_tables = dict()
+    lookup_path = join(ops.data_dir, ops.lookup_file)
+    with open(lookup_path) as lookup:
+        reader = csv.DictReader(lookup)
+        for row in reader:
+            if row['Start Position'].isdigit():
+                meta_table = {
+                    'id': row['Table ID'].lower(),
+                    'sequence': row['Sequence Number'],
+                    'start_ix': int(row['Start Position']) - 1,
+                    'cells': int(''.join(
+                        [i for i in row['Total Cells in Table']
+                         if i.isdigit()])),
+                    'comment': row['Table Title'],
+                    'fields': [
+                        {
+                            'id': 'stusab',
+                            'comment': 'State Postal Abbreviation',
+                            'type': String,
+                            'pk': True
+                        },
+                        {
+                            'id': 'logrecno',
+                            'comment': 'Logical Record Number',
+                            'type': String,
+                            'pk': True
+                        }
+                    ]
                 }
-                base_cols.append(meta_field)
+                acs_tables[row['Table ID']] = meta_table
 
-        # create copy of base_cols so original is not modified
-        fields = list(base_cols)
-        for cx in xrange(base_ix, sheet.ncols):
-            table, col = sheet.cell_value(0, cx).split('_')
-            comment = sheet.cell_value(1, cx)
-            col_name = '_{}'.format(int(col))
+            # the universe of the table subject matter is stored in a
+            # separate row, add it to the table comment
+            elif not row['Line Number'].strip() \
+                    and not row['Start Position'].strip():
+                cur_table = acs_tables[row['Table ID']]
+                cur_table['comment'] += ', {}'.format(row['Table Title'])
 
-            meta_field = {
-                'name': col_name,
-                'comment': comment
-            }
-            fields.append(meta_field)
-            meta_tables[table] = fields
+            # note that there are some rows with a line number of '0.5'
+            # I'm not totally clear on what purpose they serve, but they
+            # are not row in the tables and are being excluded here.
+            elif row['Line Number'].isdigit():
+                meta_field = {
+                    'id': '_' + row['Line Number'],
+                    'comment': row['Table Title'],
+                    'type': Integer,
+                    'pk': False
+                }
+                acs_tables[row['Table ID']]['fields'].append(meta_field)
 
-    for
+    stusab_ix = 2
+    logrec_ix = 5
+    for mt in acs_tables.values():
+        table = Table(mt['id'], ops.metadata,
+                      *(Column(f['id'], f['type'],
+                               primary_key=f['pk'],
+                               doc=f['comment'])
+                        for f in mt['fields'])
+                      )
+        table.create()
 
+        # create a list of the indices that for the columns that will
+        # be extracted from the defined sequence for the current table
+        tbl_cols = [stusab_ix, logrec_ix]
+        tbl_cols.extend(
+            xrange(mt['start_ix'], mt['start_ix'] + mt['cells'])
+        )
 
-def detect_csv_data_types():
-    """"""
+        for st in ops.states:
+            seq_name = 'e{yr}{span}{state}{seq}000.txt'.format(
+                yr=ops.acs_year, span=ops.span,
+                state=st.lower(), seq=mt['sequence']
+            )
+            for geog in GEOGRAPHY:
+                seq_path = join(ops.data_dir, geog, seq_name)
+                with open(seq_path) as seq:
+                    reader = csv.reader(seq)
+                    for row in reader:
+                        for i in row:
+                            if i == 0:
+                                i.upper()
+                        tbl_vals = [row[i] if row[i] == 0 else row[i] or None
+                                    for i in tbl_cols]
 
-    pass
+                        table.insert(tbl_vals).execute()
+
 
 
 def process_options(arg_list=None):
@@ -287,14 +329,23 @@ def main():
     global ops
     args = sys.argv[1:]
     ops = process_options(args)
-    ops.schema = 'acs{yr}_{span}yr'.format(
-        yr=ops.acs_year, span=ops.span
-    )
 
+    pg_conn_str = 'postgres://{user}:{pw}@{host}/{db}'.format(
+        user=ops.user, pw=ops.password, host=ops.host, db=ops.dbname)
+
+    ops.lookup_file = 'ACS_{span}yr_Seq_Table_Number_' \
+                      'Lookup.txt'.format(span=ops.span)
+    ops.engine = create_engine(pg_conn_str)
+    ops.metadata = MetaData(
+        bind=ops.engine,
+        schema='acs{yr}_{span}yr'.format(yr=ops.acs_year,
+                                         span=ops.span)
+    )
     # download_acs_data()
     # create_database_and_schema()
     # create_geoheader()
     create_acs_tables()
+
 
 if __name__ == '__main__':
     main()
