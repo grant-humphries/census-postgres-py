@@ -8,7 +8,8 @@ from pprint import pprint
 from os.path import dirname, exists, join
 
 import xlrd
-from sqlalchemy import create_engine, Column, Table, Integer, String, MetaData
+from sqlalchemy \
+    import create_engine, Column, Table, Integer, Float, String, MetaData
 from sqlalchemy_utils import database_exists, create_database
 
 # geography groupings offered by the Census Bureau
@@ -190,6 +191,7 @@ def create_acs_tables():
                         [i for i in row['Total Cells in Table']
                          if i.isdigit()])),
                     'comment': row['Table Title'],
+                    'num_type': Integer,
                     'fields': [
                         {
                             'id': 'stusab',
@@ -214,17 +216,24 @@ def create_acs_tables():
                 cur_table = acs_tables[row['Table ID']]
                 cur_table['comment'] += ', {}'.format(row['Table Title'])
 
+            # from what I can ascertain of row number of 0.5 indicates
+            # that a tables number values are float instead of the
+            # default integer
+            elif row['Line Number'] == '0.5':
+                acs_tables[row['Table ID']]['num_type'] = Float
+
             # note that there are some rows with a line number of '0.5'
             # I'm not totally clear on what purpose they serve, but they
             # are not row in the tables and are being excluded here.
             elif row['Line Number'].isdigit():
+                cur_table = acs_tables[row['Table ID']]
                 meta_field = {
                     'id': '_' + row['Line Number'],
                     'comment': row['Table Title'],
-                    'type': Integer,
+                    'type': cur_table['num_type'],
                     'pk': False
                 }
-                acs_tables[row['Table ID']]['fields'].append(meta_field)
+                cur_table['fields'].append(meta_field)
 
     stusab_ix = 2
     logrec_ix = 5
@@ -254,14 +263,21 @@ def create_acs_tables():
                 with open(seq_path) as seq:
                     reader = csv.reader(seq)
                     for row in reader:
+                        tbl_vals = list()
                         for i in row:
-                            if i == 0:
-                                i.upper()
-                        tbl_vals = [row[i] if row[i] == 0 else row[i] or None
-                                    for i in tbl_cols]
+                            if i in tbl_cols:
+                                # data clean up
+                                if i == stusab_ix:
+                                    row[i] = row[i].upper()
+                                elif row[i] == '.':
+                                    row[i] = 0.0
+                                elif row[i] == '':
+                                    row[i] = None
 
+                                tbl_vals.append(row[i])
+                                print tbl_vals
+                                exit()
                         table.insert(tbl_vals).execute()
-
 
 
 def process_options(arg_list=None):
@@ -342,8 +358,8 @@ def main():
                                          span=ops.span)
     )
     # download_acs_data()
-    # create_database_and_schema()
-    # create_geoheader()
+    create_database_and_schema()
+    create_geoheader()
     create_acs_tables()
 
 
