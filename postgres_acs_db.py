@@ -5,11 +5,11 @@ import zipfile
 import urllib2
 import argparse
 from pprint import pprint
-from os.path import dirname, exists, join
+from os.path import dirname, exists, join, realpath
 
 import xlrd
 from sqlalchemy \
-    import create_engine, Column, Table, Integer, Float, String, MetaData
+    import create_engine, Column, Table, BigInteger, Float, String, MetaData
 from sqlalchemy_utils import database_exists, create_database
 
 # geography groupings offered by the Census Bureau
@@ -21,10 +21,19 @@ PRIMARY_KEY = [
     'STUSAB',
     'LOGRECNO'
 ]
-STATE_DICT = {
-    'OR': 'Oregon',
-    'WA': 'Washington'
-}
+
+
+def get_states_mapping():
+    """Maps state abbreviations to their full name"""
+
+    states_dict = dict()
+    states_csv = join(realpath('.'), 'states.csv')
+    with open(states_csv) as states:
+        reader = csv.DictReader(states)
+        for r in reader:
+            states_dict[r['Abbreviation']] = r['State'].replace(' ', '_')
+
+    return states_dict
 
 
 def download_acs_data():
@@ -42,7 +51,7 @@ def download_acs_data():
             os.makedirs(geog_dir)
 
         for st in ops.states:
-            st_name = STATE_DICT[st]
+            st_name = ops.states_dict[st]
             geog_url = '{base_url}/data/{span}_year_by_state/' \
                        '{state}_{geography}.zip'.format(
                             base_url=acs_url, span=ops.span,
@@ -170,7 +179,7 @@ def create_geoheader():
                 # null values come in from the csv as empty strings
                 # this converts them such that they will be NULL in
                 # the database
-                null_row = [v if v == 0 else v or None for v in row]
+                null_row = [None if v == '' else v for v in row]
                 table.insert(null_row).execute()
 
 
@@ -191,7 +200,7 @@ def create_acs_tables():
                         [i for i in row['Total Cells in Table']
                          if i.isdigit()])),
                     'comment': row['Table Title'],
-                    'num_type': Integer,
+                    'num_type': BigInteger,
                     'fields': [
                         {
                             'id': 'stusab',
@@ -235,6 +244,14 @@ def create_acs_tables():
                 }
                 cur_table['fields'].append(meta_field)
 
+    # a few values need to be scrubbed in the source data, this
+    # dictionary defines those mappings
+    scrub_map = {k.lower(): k for k in ops.states_dict.keys()}
+    scrub_map.update({
+        '': None,
+        '.': 0.0
+    })
+
     stusab_ix = 2
     logrec_ix = 5
     for mt in acs_tables.values():
@@ -248,11 +265,12 @@ def create_acs_tables():
 
         # create a list of the indices that for the columns that will
         # be extracted from the defined sequence for the current table
-        tbl_cols = [stusab_ix, logrec_ix]
-        tbl_cols.extend(
+        columns = [stusab_ix, logrec_ix]
+        columns.extend(
             xrange(mt['start_ix'], mt['start_ix'] + mt['cells'])
         )
 
+        memory_tbl = list()
         for st in ops.states:
             seq_name = 'e{yr}{span}{state}{seq}000.txt'.format(
                 yr=ops.acs_year, span=ops.span,
@@ -263,21 +281,21 @@ def create_acs_tables():
                 with open(seq_path) as seq:
                     reader = csv.reader(seq)
                     for row in reader:
-                        tbl_vals = list()
-                        for i in row:
-                            if i in tbl_cols:
-                                # data clean up
-                                if i == stusab_ix:
-                                    row[i] = row[i].upper()
-                                elif row[i] == '.':
-                                    row[i] = 0.0
-                                elif row[i] == '':
-                                    row[i] = None
+                        tbl_ix = 0
+                        tbl_row = dict()
+                        for ix in columns:
+                            try:
+                                row[ix] = scrub_map[row[ix]]
+                            except KeyError:
+                                pass
 
-                                tbl_vals.append(row[i])
-                                print tbl_vals
-                                exit()
-                        table.insert(tbl_vals).execute()
+                            field_name = mt['fields'][tbl_ix]['id']
+                            tbl_row[field_name] = row[ix]
+                            tbl_ix += 1
+
+                        memory_tbl.append(tbl_row)
+
+        ops.engine.execute(table.insert(), memory_tbl)
 
 
 def process_options(arg_list=None):
@@ -349,9 +367,10 @@ def main():
     pg_conn_str = 'postgres://{user}:{pw}@{host}/{db}'.format(
         user=ops.user, pw=ops.password, host=ops.host, db=ops.dbname)
 
+    ops.engine = create_engine(pg_conn_str)
+    ops.states_dict = get_states_mapping()
     ops.lookup_file = 'ACS_{span}yr_Seq_Table_Number_' \
                       'Lookup.txt'.format(span=ops.span)
-    ops.engine = create_engine(pg_conn_str)
     ops.metadata = MetaData(
         bind=ops.engine,
         schema='acs{yr}_{span}yr'.format(yr=ops.acs_year,
@@ -359,7 +378,7 @@ def main():
     )
     # download_acs_data()
     create_database_and_schema()
-    create_geoheader()
+    # create_geoheader()
     create_acs_tables()
 
 
