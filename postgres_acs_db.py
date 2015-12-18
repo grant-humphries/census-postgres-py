@@ -4,13 +4,10 @@ import sys
 import zipfile
 import urllib2
 import argparse
-from pprint import pprint
 from os.path import dirname, exists, join, realpath
 
 import xlrd
-from sqlalchemy \
-    import create_engine, Column, Table, BigInteger, Float, String, MetaData
-from sqlalchemy_utils import database_exists, create_database
+from sqlalchemy import create_engine, Column, Table, Numeric, Text, MetaData
 
 # geography groupings offered by the Census Bureau
 GEOGRAPHY = [
@@ -26,14 +23,14 @@ PRIMARY_KEY = [
 def get_states_mapping():
     """Maps state abbreviations to their full name"""
 
-    states_dict = dict()
-    states_csv = join(realpath('.'), 'states.csv')
-    with open(states_csv) as states:
-        reader = csv.DictReader(states)
+    states = dict()
+    states_csv_path = join(realpath('.'), 'states.csv')
+    with open(states_csv_path) as states_csv:
+        reader = csv.DictReader(states_csv)
         for r in reader:
-            states_dict[r['Abbreviation']] = r['State'].replace(' ', '_')
+            states[r['Abbreviation']] = r['State'].replace(' ', '_')
 
-    return states_dict
+    return states
 
 
 def download_acs_data():
@@ -51,7 +48,7 @@ def download_acs_data():
             os.makedirs(geog_dir)
 
         for st in ops.states:
-            st_name = ops.states_dict[st]
+            st_name = states_dict[st]
             geog_url = '{base_url}/data/{span}_year_by_state/' \
                        '{state}_{geography}.zip'.format(
                             base_url=acs_url, span=ops.span,
@@ -59,7 +56,7 @@ def download_acs_data():
 
             geog_path = download_with_progress(geog_url, geog_dir)
             with zipfile.ZipFile(geog_path, 'r') as z:
-                print 'unzipping...'
+                print '\nunzipping...'
                 z.extractall(dirname(geog_path))
 
     # the raw csv doesn't have field names for metadata, the templates
@@ -71,7 +68,7 @@ def download_acs_data():
 
     schema_path = download_with_progress(schema_url, ops.data_dir)
     with zipfile.ZipFile(schema_path, 'r') as z:
-        print 'unzipping...'
+        print '\nunzipping...'
         z.extractall(dirname(schema_path))
 
     # download the lookup table that contains information as to how to
@@ -114,13 +111,10 @@ def download_with_progress(url, dir):
     return file_path
 
 
-def create_database_and_schema():
+def drop_create_schema():
     """"""
 
     engine = ops.engine
-    if not database_exists(engine.url):
-        create_database(engine.url)
-
     engine.execute("DROP SCHEMA IF EXISTS {} CASCADE;".format(
         ops.metadata.schema))
     engine.execute("CREATE SCHEMA {};".format(ops.metadata.schema))
@@ -140,7 +134,7 @@ def create_geoheader():
         field = {
             'id': sheet.cell_value(0, cx).lower(),
             'comment': sheet.cell_value(1, cx),
-            'type': String
+            'type': Text
         }
         if field['id'].upper() in PRIMARY_KEY:
             field['pk'] = True
@@ -156,7 +150,14 @@ def create_geoheader():
 
         meta_fields.append(field)
 
-    table = None
+    print '\ncreating geoheader...'
+
+    table = Table(
+        'geoheader', ops.metadata,
+        *(Column(f['id'], f['type'], primary_key=f['pk'], doc=f['comment'])
+          for f in meta_fields))
+    table.create()
+
     geog_dir = join(ops.data_dir, GEOGRAPHY[0].lower())
     for st in ops.states:
         geo_csv = 'g{yr}{span}{state}.csv'.format(
@@ -164,17 +165,6 @@ def create_geoheader():
         )
         with open(join(geog_dir, geo_csv)) as geo_data:
             reader = csv.reader(geo_data)
-
-            if table is None:
-                table = Table(
-                    'geoheader', ops.metadata,
-                    *(Column(
-                        f['id'], f['type'],
-                        primary_key=f['pk'],
-                        doc=f['comment'])
-                      for f in meta_fields))
-                table.create()
-
             for row in reader:
                 # null values come in from the csv as empty strings
                 # this converts them such that they will be NULL in
@@ -200,18 +190,18 @@ def create_acs_tables():
                         [i for i in row['Total Cells in Table']
                          if i.isdigit()])),
                     'comment': row['Table Title'],
-                    'num_type': BigInteger,
+                    'num_type': Numeric,
                     'fields': [
                         {
                             'id': 'stusab',
                             'comment': 'State Postal Abbreviation',
-                            'type': String,
+                            'type': Text,
                             'pk': True
                         },
                         {
                             'id': 'logrecno',
                             'comment': 'Logical Record Number',
-                            'type': String,
+                            'type': Text,
                             'pk': True
                         }
                     ]
@@ -224,12 +214,6 @@ def create_acs_tables():
                     and not row['Start Position'].strip():
                 cur_table = acs_tables[row['Table ID']]
                 cur_table['comment'] += ', {}'.format(row['Table Title'])
-
-            # from what I can ascertain of row number of 0.5 indicates
-            # that a tables number values are float instead of the
-            # default integer
-            elif row['Line Number'] == '0.5':
-                acs_tables[row['Table ID']]['num_type'] = Float
 
             # note that there are some rows with a line number of '0.5'
             # I'm not totally clear on what purpose they serve, but they
@@ -246,56 +230,68 @@ def create_acs_tables():
 
     # a few values need to be scrubbed in the source data, this
     # dictionary defines those mappings
-    scrub_map = {k.lower(): k for k in ops.states_dict.keys()}
+    scrub_map = {k.lower(): k for k in states_dict.keys()}
     scrub_map.update({
         '': None,
-        '.': 0.0
+        '.': 0
     })
+    # there are two variants for each table one contains the actual
+    # data and other contains the corresponding margin of error for
+    # each cell
+    table_variant = {'e': 'standard', 'm': 'margin of error'}
+    stusab_ix, logrec_ix = 2, 5
 
-    stusab_ix = 2
-    logrec_ix = 5
+    print 'creating acs tables, this will take awhile...'
+
     for mt in acs_tables.values():
-        table = Table(mt['id'], ops.metadata,
-                      *(Column(f['id'], f['type'],
-                               primary_key=f['pk'],
-                               doc=f['comment'])
-                        for f in mt['fields'])
-                      )
-        table.create()
+        for tv in table_variant:
+            table_name = mt['id']
 
-        # create a list of the indices that for the columns that will
-        # be extracted from the defined sequence for the current table
-        columns = [stusab_ix, logrec_ix]
-        columns.extend(
-            xrange(mt['start_ix'], mt['start_ix'] + mt['cells'])
-        )
+            # append 'moe' to the table name for the margin
+            # of error variant
+            if tv == 'm':
+                table_name += '_moe'
 
-        memory_tbl = list()
-        for st in ops.states:
-            seq_name = 'e{yr}{span}{state}{seq}000.txt'.format(
-                yr=ops.acs_year, span=ops.span,
-                state=st.lower(), seq=mt['sequence']
+            table = Table(table_name, ops.metadata,
+                          *(Column(f['id'], f['type'],
+                                   primary_key=f['pk'],
+                                   doc=f['comment'])
+                            for f in mt['fields']))
+            table.create()
+
+            # create a list of the indices that for the columns that will
+            # be extracted from the defined sequence for the current table
+            columns = [stusab_ix, logrec_ix]
+            columns.extend(
+                xrange(mt['start_ix'], mt['start_ix'] + mt['cells'])
             )
-            for geog in GEOGRAPHY:
-                seq_path = join(ops.data_dir, geog, seq_name)
-                with open(seq_path) as seq:
-                    reader = csv.reader(seq)
-                    for row in reader:
-                        tbl_ix = 0
-                        tbl_row = dict()
-                        for ix in columns:
-                            try:
-                                row[ix] = scrub_map[row[ix]]
-                            except KeyError:
-                                pass
 
-                            field_name = mt['fields'][tbl_ix]['id']
-                            tbl_row[field_name] = row[ix]
-                            tbl_ix += 1
+            memory_tbl = list()
+            for st in ops.states:
+                seq_name = '{type}{yr}{span}{state}{seq}000.txt'.format(
+                    type=tv, yr=ops.acs_year, span=ops.span,
+                    state=st.lower(), seq=mt['sequence'])
 
-                        memory_tbl.append(tbl_row)
+                for geog in GEOGRAPHY:
+                    seq_path = join(ops.data_dir, geog, seq_name)
+                    with open(seq_path) as seq:
+                        reader = csv.reader(seq)
+                        for row in reader:
+                            tbl_ix = 0
+                            tbl_row = dict()
+                            for ix in columns:
+                                try:
+                                    row[ix] = scrub_map[row[ix]]
+                                except KeyError:
+                                    pass
 
-        ops.engine.execute(table.insert(), memory_tbl)
+                                field_name = mt['fields'][tbl_ix]['id']
+                                tbl_row[field_name] = row[ix]
+                                tbl_ix += 1
+
+                            memory_tbl.append(tbl_row)
+
+            ops.engine.execute(table.insert(), memory_tbl)
 
 
 def process_options(arg_list=None):
@@ -306,6 +302,7 @@ def process_options(arg_list=None):
         '-s', '--states',
         nargs='+',
         required=True,
+        choices=sorted(states_dict.keys()),
         dest='states',
         help='states for which is to be include in acs database, '
              'indicate states with two letter postal codes'
@@ -360,6 +357,9 @@ def process_options(arg_list=None):
 def main():
     """"""
 
+    global states_dict
+    states_dict = get_states_mapping()
+
     global ops
     args = sys.argv[1:]
     ops = process_options(args)
@@ -368,17 +368,16 @@ def main():
         user=ops.user, pw=ops.password, host=ops.host, db=ops.dbname)
 
     ops.engine = create_engine(pg_conn_str)
-    ops.states_dict = get_states_mapping()
     ops.lookup_file = 'ACS_{span}yr_Seq_Table_Number_' \
                       'Lookup.txt'.format(span=ops.span)
     ops.metadata = MetaData(
         bind=ops.engine,
         schema='acs{yr}_{span}yr'.format(yr=ops.acs_year,
-                                         span=ops.span)
-    )
-    # download_acs_data()
-    create_database_and_schema()
-    # create_geoheader()
+                                         span=ops.span))
+
+    download_acs_data()
+    drop_create_schema()
+    create_geoheader()
     create_acs_tables()
 
 
