@@ -291,6 +291,10 @@ def create_acs_tables():
 
                             memory_tbl.append(tbl_row)
 
+            # this type bulk of insert uses sqlalchemy core and
+            # is faster than alternative methods see details here:
+            # http://docs.sqlalchemy.org/en/rel_0_8/faq.html#
+            # i-m-inserting-400-000-rows-with-the-orm-and-it-s-really-slow
             ops.engine.execute(table.insert(), memory_tbl)
 
 
