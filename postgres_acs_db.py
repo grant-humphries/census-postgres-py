@@ -7,7 +7,7 @@ import argparse
 from os.path import dirname, exists, join, realpath
 
 import xlrd
-from sqlalchemy import create_engine, Column, Table, Numeric, Text, MetaData
+from sqlalchemy import create_engine, MetaData, Table, Column, Numeric, Text
 
 # geography groupings offered by the Census Bureau
 GEOGRAPHY = [
@@ -115,9 +115,9 @@ def drop_create_schema():
     """"""
 
     engine = ops.engine
-    engine.execute("DROP SCHEMA IF EXISTS {} CASCADE;".format(
-        ops.metadata.schema))
-    engine.execute("CREATE SCHEMA {};".format(ops.metadata.schema))
+    schema = ops.metadata.schema
+    engine.execute("DROP SCHEMA IF EXISTS {} CASCADE;".format(schema))
+    engine.execute("CREATE SCHEMA {};".format(schema))
 
 
 def create_geoheader():
@@ -133,7 +133,7 @@ def create_geoheader():
     for cx in xrange(sheet.ncols):
         field = {
             'id': sheet.cell_value(0, cx).lower(),
-            'comment': sheet.cell_value(1, cx),
+            'comment': sheet.cell_value(1, cx).encode('ascii', 'ignore'),
             'type': Text
         }
         if field['id'].upper() in PRIMARY_KEY:
@@ -152,11 +152,16 @@ def create_geoheader():
 
     print '\ncreating geoheader...'
 
+    tbl_name = 'geoheader'
+    tbl_comment = 'Intermediary table used to join ACS and TIGER data'
     table = Table(
-        'geoheader', ops.metadata,
+        tbl_name,
+        ops.metadata,
         *(Column(f['id'], f['type'], primary_key=f['pk'], doc=f['comment'])
-          for f in meta_fields))
+          for f in meta_fields),
+        info=tbl_comment)
     table.create()
+    add_database_comments(table)
 
     geog_dir = join(ops.data_dir, GEOGRAPHY[0].lower())
     for st in ops.states:
@@ -252,12 +257,15 @@ def create_acs_tables():
             if tv == 'm':
                 table_name += '_moe'
 
-            table = Table(table_name, ops.metadata,
+            table = Table(table_name,
+                          ops.metadata,
                           *(Column(f['id'], f['type'],
                                    primary_key=f['pk'],
                                    doc=f['comment'])
-                            for f in mt['fields']))
+                            for f in mt['fields']),
+                          info=mt['comment'])
             table.create()
+            add_database_comments(table)
 
             # create a list of the indices that for the columns that will
             # be extracted from the defined sequence for the current table
@@ -296,6 +304,30 @@ def create_acs_tables():
             # http://docs.sqlalchemy.org/en/rel_0_8/faq.html#
             # i-m-inserting-400-000-rows-with-the-orm-and-it-s-really-slow
             ops.engine.execute(table.insert(), memory_tbl)
+
+
+def add_database_comments(table):
+    """Add comments to the supplied table and each of its columns, the
+    meaning of each table and column in the ACS can be difficult to
+    ascertain and this should help to clarify"""
+
+    schema = ops.metadata.schema
+    with ops.engine.begin() as connection:
+        tbl_comment_sql = "COMMENT ON TABLE " \
+                          "{schema}.{table} IS '{comment}';".format(
+                                schema=schema, table=table.name,
+                                comment=table.info)
+        connection.execute(tbl_comment_sql)
+
+        col_template = r"COMMENT ON COLUMN " \
+                       "{schema}.{table}.{column} IS '{comment}';"
+        for c in table.columns:
+            # sqlalchemy throws an error when there is a '%' sign in a
+            # query thus they must be escaped with a second '%%' sign
+            col_comment_sql = col_template.format(
+                schema=schema, table=table.name,
+                column=c.name, comment=c.doc.replace('%', '%%'))
+            connection.execute(col_comment_sql)
 
 
 def process_options(arg_list=None):
@@ -379,7 +411,7 @@ def main():
         schema='acs{yr}_{span}yr'.format(yr=ops.acs_year,
                                          span=ops.span))
 
-    download_acs_data()
+    # download_acs_data()
     drop_create_schema()
     create_geoheader()
     create_acs_tables()
