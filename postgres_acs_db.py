@@ -132,11 +132,11 @@ def create_geoheader():
     blank_counter = 1
     for cx in xrange(sheet.ncols):
         field = {
-            'id': sheet.cell_value(0, cx).lower(),
-            'comment': sheet.cell_value(1, cx).encode('ascii', 'ignore'),
+            'name': sheet.cell_value(0, cx).lower(),
+            'comment': sheet.cell_value(1, cx).encode('utf8'),
             'type': Text
         }
-        if field['id'].upper() in PRIMARY_KEY:
+        if field['name'].upper() in PRIMARY_KEY:
             field['pk'] = True
         else:
             field['pk'] = False
@@ -144,8 +144,8 @@ def create_geoheader():
         # there are multiple fields called 'blank' that are reserved
         # for future use, but columns in the same table cannot have
         # the same name
-        if field['id'] == 'blank':
-            field['id'] += str(blank_counter)
+        if field['name'] == 'blank':
+            field['name'] += str(blank_counter)
             blank_counter += 1
 
         meta_fields.append(field)
@@ -157,7 +157,7 @@ def create_geoheader():
     table = Table(
         tbl_name,
         ops.metadata,
-        *(Column(f['id'], f['type'], primary_key=f['pk'], doc=f['comment'])
+        *(Column(f['name'], f['type'], primary_key=f['pk'], doc=f['comment'])
           for f in meta_fields),
         info=tbl_comment)
     table.create()
@@ -183,12 +183,15 @@ def create_acs_tables():
 
     acs_tables = dict()
     lookup_path = join(ops.data_dir, ops.lookup_file)
+
+    # this csv is encoded as cp1252 (aka windows-1252) this some of the
+    # strings contain characters that need to be decoded as such
     with open(lookup_path) as lookup:
         reader = csv.DictReader(lookup)
         for row in reader:
             if row['Start Position'].isdigit():
                 meta_table = {
-                    'id': row['Table ID'].lower(),
+                    'name': row['Table ID'].lower(),
                     'sequence': row['Sequence Number'],
                     'start_ix': int(row['Start Position']) - 1,
                     'cells': int(''.join(
@@ -198,13 +201,13 @@ def create_acs_tables():
                     'num_type': Numeric,
                     'fields': [
                         {
-                            'id': 'stusab',
+                            'name': 'stusab',
                             'comment': 'State Postal Abbreviation',
                             'type': Text,
                             'pk': True
                         },
                         {
-                            'id': 'logrecno',
+                            'name': 'logrecno',
                             'comment': 'Logical Record Number',
                             'type': Text,
                             'pk': True
@@ -226,7 +229,7 @@ def create_acs_tables():
             elif row['Line Number'].isdigit():
                 cur_table = acs_tables[row['Table ID']]
                 meta_field = {
-                    'id': '_' + row['Line Number'],
+                    'name': '_' + row['Line Number'],
                     'comment': row['Table Title'],
                     'type': cur_table['num_type'],
                     'pk': False
@@ -250,7 +253,7 @@ def create_acs_tables():
 
     for mt in acs_tables.values():
         for tv in table_variant:
-            table_name = mt['id']
+            table_name = mt['name']
 
             # append 'moe' to the table name for the margin
             # of error variant
@@ -259,13 +262,13 @@ def create_acs_tables():
 
             table = Table(table_name,
                           ops.metadata,
-                          *(Column(f['id'], f['type'],
+                          *(Column(f['name'], f['type'],
                                    primary_key=f['pk'],
                                    doc=f['comment'])
                             for f in mt['fields']),
                           info=mt['comment'])
             table.create()
-            add_database_comments(table)
+            add_database_comments(table, 'cp1252')
 
             # create a list of the indices that for the columns that will
             # be extracted from the defined sequence for the current table
@@ -293,7 +296,7 @@ def create_acs_tables():
                                 except KeyError:
                                     pass
 
-                                field_name = mt['fields'][tbl_ix]['id']
+                                field_name = mt['fields'][tbl_ix]['name']
                                 tbl_row[field_name] = row[ix]
                                 tbl_ix += 1
 
@@ -306,27 +309,36 @@ def create_acs_tables():
             ops.engine.execute(table.insert(), memory_tbl)
 
 
-def add_database_comments(table):
+def add_database_comments(table, encoding=None):
     """Add comments to the supplied table and each of its columns, the
     meaning of each table and column in the ACS can be difficult to
     ascertain and this should help to clarify"""
 
     schema = ops.metadata.schema
     with ops.engine.begin() as connection:
+        # using postgres dollar quotes on comment as some of the
+        # comments contain single quotes
         tbl_comment_sql = "COMMENT ON TABLE " \
-                          "{schema}.{table} IS '{comment}';".format(
+                          "{schema}.{table} IS $${comment}$$;".format(
                                 schema=schema, table=table.name,
                                 comment=table.info)
         connection.execute(tbl_comment_sql)
 
         col_template = r"COMMENT ON COLUMN " \
-                       "{schema}.{table}.{column} IS '{comment}';"
+                       "{schema}.{table}.{column} IS $${comment}$$;"
         for c in table.columns:
             # sqlalchemy throws an error when there is a '%' sign in a
             # query thus they must be escaped with a second '%%' sign
             col_comment_sql = col_template.format(
                 schema=schema, table=table.name,
                 column=c.name, comment=c.doc.replace('%', '%%'))
+
+            # the files from which comments are derived have non-ascii
+            # encoded files and thus need to be appropriately decoded
+            # as such
+            if encoding:
+                col_comment_sql = col_comment_sql.decode(encoding)
+
             connection.execute(col_comment_sql)
 
 
