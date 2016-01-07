@@ -352,14 +352,14 @@ def process_options(arg_list=None):
         required=True,
         choices=sorted(states_dict.keys()),
         dest='states',
-        help='states for which is to be include in acs database, '
+        help='states for which data is to be include in acs database, '
              'indicate states with two letter postal codes'
     )
     parser.add_argument(
         '-y', '--year',
         required=True,
         dest='acs_year',
-        help='most recent year covered by acs data product'
+        help='most recent year of desired acs data product'
     )
     parser.add_argument(
         '-l', '--length', '--span',
@@ -378,24 +378,24 @@ def process_options(arg_list=None):
         '-H', '--host',
         default='localhost',
         dest='host',
-        help='postgres database server host'
+        help='url of postgres host server'
     )
     parser.add_argument(
         '-u', '--user',
         default='postgres',
         dest='user',
-        help='postgres database user name'
+        help='postgres user name'
     )
     parser.add_argument(
         '-d', '--dbname',
         default='census',
         dest='dbname',
-        help='database name to create/connect to'
+        help='name of target database'
     )
     parser.add_argument(
         '-p', '--password',
         dest='password',
-        help='postgres data base password for supplied user'
+        help='postgres password for supplied user'
     )
 
     options = parser.parse_args(arg_list)
@@ -423,7 +423,7 @@ def main():
         schema='acs{yr}_{span}yr'.format(yr=ops.acs_year,
                                          span=ops.span))
 
-    # download_acs_data()
+    download_acs_data()
     drop_create_schema()
     create_geoheader()
     create_acs_tables()
