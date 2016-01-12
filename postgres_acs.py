@@ -1,34 +1,42 @@
 import os
 import csv
 import sys
-import zipfile
 import urllib2
 import argparse
+from zipfile import ZipFile
 from os.path import dirname, exists, join, realpath
 
 import xlrd
 from sqlalchemy import create_engine, MetaData, Table, Column, Numeric, Text
 
 # geography groupings offered by the Census Bureau
-GEOGRAPHY = [
+ACS_GEOGRAPHY = [
     'Tracts_Block_Groups_Only',
     'All_Geographies_Not_Tracts_Block_Groups'
 ]
-PRIMARY_KEY = [
+ACS_PRIMARY_KEY = [
     'STUSAB',
     'LOGRECNO'
 ]
 
 
-def get_states_mapping():
-    """Maps state abbreviations to their full name"""
+def get_states_mapping(value_type):
+    """Maps state abbreviations to their full name or FIPS code"""
+
+    value_dict = {'name': 'State', 'fips': 'FIPS Code'}
+    try:
+        value_field = value_dict[value_type]
+    except KeyError:
+        print 'Invalid value type supplied for states mapping'
+        print 'options are: "name" and "fips"'
+        exit()
 
     states = dict()
-    states_csv_path = join(realpath('.'), 'states.csv')
+    states_csv_path = join(realpath('.'), 'census_states.csv')
     with open(states_csv_path) as states_csv:
         reader = csv.DictReader(states_csv)
         for r in reader:
-            states[r['Abbreviation']] = r['State'].replace(' ', '_')
+            states[r['Abbreviation']] = r[value_field].replace(' ', '_')
 
     return states
 
@@ -41,7 +49,7 @@ def download_acs_data():
     acs_url = 'http://www2.census.gov/programs-surveys/' \
               'acs/summary_file/{yr}'.format(yr=ops.acs_year)
 
-    for geog in GEOGRAPHY:
+    for geog in ACS_GEOGRAPHY:
         geog_dir = join(ops.data_dir, geog.lower())
 
         if not exists(geog_dir):
@@ -55,7 +63,7 @@ def download_acs_data():
                             state=st_name, geography=geog)
 
             geog_path = download_with_progress(geog_url, geog_dir)
-            with zipfile.ZipFile(geog_path, 'r') as z:
+            with ZipFile(geog_path, 'r') as z:
                 print '\nunzipping...'
                 z.extractall(dirname(geog_path))
 
@@ -67,7 +75,7 @@ def download_acs_data():
                       base_url=acs_url, yr=ops.acs_year, span=ops.span)
 
     schema_path = download_with_progress(schema_url, ops.data_dir)
-    with zipfile.ZipFile(schema_path, 'r') as z:
+    with ZipFile(schema_path, 'r') as z:
         print '\nunzipping...'
         z.extractall(dirname(schema_path))
 
@@ -111,7 +119,7 @@ def download_with_progress(url, dir):
     return file_path
 
 
-def drop_create_schema():
+def drop_create_acs_schema():
     """"""
 
     engine = ops.engine
@@ -136,7 +144,7 @@ def create_geoheader():
             'comment': sheet.cell_value(1, cx).encode('utf8'),
             'type': Text
         }
-        if field['name'].upper() in PRIMARY_KEY:
+        if field['name'].upper() in ACS_PRIMARY_KEY:
             field['pk'] = True
         else:
             field['pk'] = False
@@ -163,7 +171,7 @@ def create_geoheader():
     table.create()
     add_database_comments(table)
 
-    geog_dir = join(ops.data_dir, GEOGRAPHY[0].lower())
+    geog_dir = join(ops.data_dir, ACS_GEOGRAPHY[0].lower())
     for st in ops.states:
         geo_csv = 'g{yr}{span}{state}.csv'.format(
             yr=ops.acs_year, span=ops.span, state=st.lower()
@@ -283,7 +291,7 @@ def create_acs_tables():
                     type=tv, yr=ops.acs_year, span=ops.span,
                     state=st.lower(), seq=mt['sequence'])
 
-                for geog in GEOGRAPHY:
+                for geog in ACS_GEOGRAPHY:
                     seq_path = join(ops.data_dir, geog, seq_name)
                     with open(seq_path) as seq:
                         reader = csv.reader(seq)
@@ -351,7 +359,6 @@ def process_options(arg_list=None):
         nargs='+',
         required=True,
         choices=sorted(states_dict.keys()),
-        dest='states',
         help='states for which data is to be include in acs database, '
              'indicate states with two letter postal codes'
     )
@@ -359,42 +366,38 @@ def process_options(arg_list=None):
         '-y', '--year',
         required=True,
         dest='acs_year',
-        help='most recent year of desired acs data product'
+        help='most recent year of desired ACS data product'
     )
     parser.add_argument(
-        '-l', '--length', '--span',
+        '-l', '--span', '--length',
         default=5,
         choices=(1, 3, 5),
-        dest='span',
-        help='number of years that acs data product covers'
+        help='number of years that ACS data product covers'
     )
     parser.add_argument(
         '-dd', '--data_directory',
-        default=join(os.getcwd(), 'data'),
+        default=join(os.getcwd(), 'data', 'ACS'),
         dest='data_dir',
-        help='file path at which downloaded census data is to be saved'
+        help='file path at which downloaded ACS data is to be saved'
     )
     parser.add_argument(
         '-H', '--host',
         default='localhost',
-        dest='host',
         help='url of postgres host server'
     )
     parser.add_argument(
         '-u', '--user',
         default='postgres',
-        dest='user',
         help='postgres user name'
     )
     parser.add_argument(
         '-d', '--dbname',
         default='census',
-        dest='dbname',
         help='name of target database'
     )
     parser.add_argument(
         '-p', '--password',
-        dest='password',
+        required=True,
         help='postgres password for supplied user'
     )
 
@@ -406,7 +409,7 @@ def main():
     """"""
 
     global states_dict
-    states_dict = get_states_mapping()
+    states_dict = get_states_mapping('name')
 
     global ops
     args = sys.argv[1:]
@@ -424,9 +427,9 @@ def main():
                                          span=ops.span))
 
     download_acs_data()
-    drop_create_schema()
-    create_geoheader()
-    create_acs_tables()
+    # drop_create_acs_schema()
+    # create_geoheader()
+    # create_acs_tables()
 
 
 if __name__ == '__main__':
