@@ -427,9 +427,9 @@ def main():
                                          span=ops.span))
 
     download_acs_data()
-    # drop_create_acs_schema()
-    # create_geoheader()
-    # create_acs_tables()
+    drop_create_acs_schema()
+    create_geoheader()
+    create_acs_tables()
 
 
 if __name__ == '__main__':

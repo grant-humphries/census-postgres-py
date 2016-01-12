@@ -10,7 +10,7 @@ from sqlalchemy \
     import create_engine, MetaData, Table, Column, Float, Integer, Text
 from geoalchemy2 import Geometry
 from geoalchemy2.elements import WKTElement
-from shapely.geometry import shape
+from shapely.geometry import shape, MultiPolygon
 
 import postgres_acs as pg_acs
 
@@ -97,19 +97,29 @@ def load_tiger_data():
                 for fid, feat in tiger_shape.items():
                     fields = feat['properties']
                     row = {k.lower(): v for k, v in fields.items()}
-                    shapely_geom = shape(feat['geometry'])
+
+                    # casting to multipolygon here because a few features
+                    # are multi's and the geometry types must match
+                    shapely_geom = MultiPolygon([shape(feat['geometry'])])
+
+                    # geoalchemy2 requires that geometry be in EWKT format
+                    # for inserts, that conversion is made below
                     ga2_geom = WKTElement(shapely_geom.wkt, epsg)
                     row['geom'] = ga2_geom
                     memory_tbl.append(row)
 
-                    if fid % 500 == 0 or fid == max_fid:
+                    count = fid + 1
+                    if count % 1000 == 0 or fid == max_fid:
                         ops.engine.execute(table.insert(), memory_tbl)
                         memory_tbl = list()
 
-                        if fid % 20000 == 0:
-                            sys.stdout.write(str(fid))
+                        # logging to inform the user
+                        if count % 20000 == 0:
+                            sys.stdout.write(str(count))
+                        elif fid == max_fid:
+                            print '\n'
                         else:
-                            sys.stdout.write('.')
+                            sys.stdout.write('..')
 
 
 def create_tiger_table(metadata, product, drop_existing=False):
@@ -121,12 +131,12 @@ def create_tiger_table(metadata, product, drop_existing=False):
         engine = ops.engine
         schema = ops.metadata.schema
         if engine.dialect.has_table(engine.connect(), table_name, schema):
-            print 'Table {0}.{1} already exists, ' \
-                  'using existing table...'.format(schema, table_name)
+            full_name = '{0}.{1}'.format(schema, table_name)
+            print 'Table {} already exists, ' \
+                  'using existing table...'.format(full_name)
             print 'to recreate the table use the "drop_existing" flag'
-            for table in ops.metadata.tables:
-                print table.name
-            return ops.metadata.tables[table_name]
+
+            return ops.metadata.tables[full_name]
 
     fiona2db = {
         'int': Integer,
@@ -134,19 +144,19 @@ def create_tiger_table(metadata, product, drop_existing=False):
         'str': Text
     }
 
-    # # it's not possible to make a distinct between polygons and multi-
-    # # polygons within shapefiles so we must assume that all polygons
-    # # are multi's or postgis may throw an error, fiona classifies all
-    # # shape poly's as single polygons and this corrects that
-    # geom_type = metadata['schema']['geometry'].upper()
-    # if geom_type == 'POLYGON':
-    #     geom_type = 'MULTI{}'.format(geom_type)
+    # it's not possible to make a distinction between polygons and
+    # multipolygons within shapefiles, so we must assume geoms of
+    # that type are multi's or postgis may throw an error, fiona's
+    # metadata always assumes single geoms so multi is appended
+    geom_type = metadata['schema']['geometry'].upper()
+    if geom_type == 'POLYGON':
+        geom_type = 'MULTI{}'.format(geom_type)
 
     columns = list()
     geom_col = Column(
         name='geom',
         type_=Geometry(
-            geometry_type='GEOMETRY',
+            geometry_type=geom_type,
             srid=int(metadata['crs']['init'].split(':')[1])))
     columns.append(geom_col)
 
