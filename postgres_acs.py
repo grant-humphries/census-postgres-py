@@ -3,6 +3,7 @@ import csv
 import sys
 import urllib2
 import argparse
+from copy import deepcopy
 from zipfile import ZipFile
 from os.path import dirname, exists, join, realpath
 
@@ -56,7 +57,7 @@ def download_acs_data():
             os.makedirs(geog_dir)
 
         for st in ops.states:
-            st_name = states_dict[st]
+            st_name = state_names[st]
             geog_url = '{base_url}/data/{span}_year_by_state/' \
                        '{state}_{geography}.zip'.format(
                             base_url=acs_url, span=ops.span,
@@ -136,27 +137,28 @@ def create_geoheader():
     book = xlrd.open_workbook(geo_schema)
     sheet = book.sheet_by_index(0)
 
-    meta_fields = []
+    columns = []
     blank_counter = 1
     for cx in xrange(sheet.ncols):
-        field = {
-            'name': sheet.cell_value(0, cx).lower(),
-            'comment': sheet.cell_value(1, cx).encode('utf8'),
-            'type': Text
-        }
-        if field['name'].upper() in ACS_PRIMARY_KEY:
-            field['pk'] = True
-        else:
-            field['pk'] = False
-
         # there are multiple fields called 'blank' that are reserved
         # for future use, but columns in the same table cannot have
         # the same name
-        if field['name'] == 'blank':
-            field['name'] += str(blank_counter)
+        col_name = sheet.cell_value(0, cx).lower()
+        if col_name == 'blank':
+            col_name += str(blank_counter)
             blank_counter += 1
 
-        meta_fields.append(field)
+        cur_col = Column(
+            name=col_name,
+            type_=Text,
+            doc=sheet.cell_value(1, cx).encode('utf8')
+        )
+        if cur_col.name.upper() in ACS_PRIMARY_KEY:
+            cur_col.primary_key = True
+        else:
+            cur_col.primary = False
+
+        columns.append(cur_col)
 
     print '\ncreating geoheader...'
 
@@ -165,8 +167,7 @@ def create_geoheader():
     table = Table(
         tbl_name,
         ops.metadata,
-        *(Column(f['name'], f['type'], primary_key=f['pk'], doc=f['comment'])
-          for f in meta_fields),
+        *columns,
         info=tbl_comment)
     table.create()
     add_database_comments(table)
@@ -206,20 +207,19 @@ def create_acs_tables():
                         [i for i in row['Total Cells in Table']
                          if i.isdigit()])),
                     'comment': row['Table Title'],
-                    'num_type': Numeric,
-                    'fields': [
-                        {
-                            'name': 'stusab',
-                            'comment': 'State Postal Abbreviation',
-                            'type': Text,
-                            'pk': True
-                        },
-                        {
-                            'name': 'logrecno',
-                            'comment': 'Logical Record Number',
-                            'type': Text,
-                            'pk': True
-                        }
+                    'columns': [
+                        Column(
+                            name='stusab',
+                            type_=Text,
+                            doc='State Postal Abbreviation',
+                            primary_key=True
+                        ),
+                        Column(
+                            name='logrecno',
+                            type_=Text,
+                            doc='Logical Record Number',
+                            primary_key=True
+                        )
                     ]
                 }
                 acs_tables[row['Table ID']] = meta_table
@@ -228,53 +228,62 @@ def create_acs_tables():
             # separate row, add it to the table comment
             elif not row['Line Number'].strip() \
                     and not row['Start Position'].strip():
-                cur_table = acs_tables[row['Table ID']]
-                cur_table['comment'] += ', {}'.format(row['Table Title'])
+                cur_tbl = acs_tables[row['Table ID']]
+                cur_tbl['comment'] += ', {}'.format(row['Table Title'])
 
             # note that there are some rows with a line number of '0.5'
             # I'm not totally clear on what purpose they serve, but they
             # are not row in the tables and are being excluded here.
             elif row['Line Number'].isdigit():
-                cur_table = acs_tables[row['Table ID']]
-                meta_field = {
-                    'name': '_' + row['Line Number'],
-                    'comment': row['Table Title'],
-                    'type': cur_table['num_type'],
-                    'pk': False
-                }
-                cur_table['fields'].append(meta_field)
+                cur_tbl = acs_tables[row['Table ID']]
+                cur_col = Column(
+                    name='_' + row['Line Number'],
+                    type_=Numeric,
+                    doc=row['Table Title']
+                )
+                cur_tbl['columns'].append(cur_col)
 
     # a few values need to be scrubbed in the source data, this
     # dictionary defines those mappings
-    scrub_map = {k.lower(): k for k in states_dict.keys()}
+    scrub_map = {k.lower(): k for k in state_names.keys()}
     scrub_map.update({
         '': None,
         '.': 0
     })
-    # there are two variants for each table one contains the actual
-    # data and other contains the corresponding margin of error for
-    # each cell
-    table_variant = {'e': 'standard', 'm': 'margin of error'}
+
     stusab_ix, logrec_ix = 2, 5
 
     print 'creating acs tables, this will take awhile...'
+    print 'currently building table:'
 
     for mt in acs_tables.values():
-        for tv in table_variant:
-            table_name = mt['name']
 
-            # append 'moe' to the table name for the margin
-            # of error variant
-            if tv == 'm':
-                table_name += '_moe'
+        # there are two variants for each table one contains the actual
+        # data and other contains the corresponding margin of error for
+        # each cell
+        table_variant = {
+            'standard': {
+                'file_char': 'e',
+                'name_ext': '',
+                'meta_table': mt
+            },
+            'margin of error': {
+                'file_char': 'm',
+                'name_ext': '_moe',
+                'meta_table': deepcopy(mt)}}
 
-            table = Table(table_name,
-                          ops.metadata,
-                          *(Column(f['name'], f['type'],
-                                   primary_key=f['pk'],
-                                   doc=f['comment'])
-                            for f in mt['fields']),
-                          info=mt['comment'])
+        for tv in table_variant.values():
+            mtv = tv['meta_table']
+            mtv['name'] += tv['name_ext']
+
+            print '\x1b[2k{}\r',
+            print '{}\r'.format(mtv['name']),
+
+            table = Table(
+                mtv['name'],
+                ops.metadata,
+                *mtv['columns'],
+                info=mtv['comment'])
             table.create()
             add_database_comments(table, 'cp1252')
 
@@ -282,14 +291,14 @@ def create_acs_tables():
             # be extracted from the defined sequence for the current table
             columns = [stusab_ix, logrec_ix]
             columns.extend(
-                xrange(mt['start_ix'], mt['start_ix'] + mt['cells'])
+                xrange(mtv['start_ix'], mtv['start_ix'] + mtv['cells'])
             )
 
             memory_tbl = list()
             for st in ops.states:
                 seq_name = '{type}{yr}{span}{state}{seq}000.txt'.format(
-                    type=tv, yr=ops.acs_year, span=ops.span,
-                    state=st.lower(), seq=mt['sequence'])
+                    type=tv['file_char'], yr=ops.acs_year, span=ops.span,
+                    state=st.lower(), seq=mtv['sequence'])
 
                 for geog in ACS_GEOGRAPHY:
                     seq_path = join(ops.data_dir, geog, seq_name)
@@ -304,7 +313,7 @@ def create_acs_tables():
                                 except KeyError:
                                     pass
 
-                                field_name = mt['fields'][tbl_ix]['name']
+                                field_name = mtv['columns'][tbl_ix].name
                                 tbl_row[field_name] = row[ix]
                                 tbl_ix += 1
 
@@ -358,7 +367,7 @@ def process_options(arg_list=None):
         '-s', '--states',
         nargs='+',
         required=True,
-        choices=sorted(states_dict.keys()),
+        choices=sorted(state_names.keys()),
         help='states for which data is to be include in acs database, '
              'indicate states with two letter postal codes'
     )
@@ -408,8 +417,8 @@ def process_options(arg_list=None):
 def main():
     """"""
 
-    global states_dict
-    states_dict = get_states_mapping('name')
+    global state_names
+    state_names = get_states_mapping('name')
 
     global ops
     args = sys.argv[1:]
@@ -426,9 +435,9 @@ def main():
         schema='acs{yr}_{span}yr'.format(yr=ops.acs_year,
                                          span=ops.span))
 
-    download_acs_data()
+    # download_acs_data()
     drop_create_acs_schema()
-    create_geoheader()
+    # create_geoheader()
     create_acs_tables()
 
 

@@ -43,7 +43,7 @@ def download_tiger_data():
             pd_url = '{base_url}/{pd_class}/' \
                           'tl_{yr}_{fips}_{pd_name}.zip'.format(
                                base_url=tiger_url, pd_class=pd_class,
-                               yr=ops.tiger_year, fips=states_dict[st],
+                               yr=ops.tiger_year, fips=state_fips[st],
                                pd_name=pd_name)
 
             pd_path = pg_acs.download_with_progress(pd_url, pd_dir)
@@ -79,7 +79,7 @@ def load_tiger_data():
 
         for st in ops.states:
             shp_name = 'tl_{yr}_{fips}_{pd_name}.shp'.format(
-                yr=ops.tiger_year, fips=states_dict[st],
+                yr=ops.tiger_year, fips=state_fips[st],
                 pd_name=pd_name)
             pd_shp = join(pd_dir, shp_name)
 
@@ -190,7 +190,7 @@ def process_options(arglist=None):
         '-s', '--states',
         nargs='+',
         required=True,
-        choices=sorted(states_dict.keys()),
+        choices=sorted(state_fips.keys()),
         help='states for which data is to be include in acs database, '
              'indicate states with two letter postal codes'
     )
@@ -245,8 +245,8 @@ def main():
     >> python postgis_tiger.py -y 2015 -s OR WA -p ur_pass
     """
 
-    global states_dict
-    states_dict = pg_acs.get_states_mapping('fips')
+    global state_fips
+    state_fips = pg_acs.get_states_mapping('fips')
 
     global ops
     args = sys.argv[1:]
