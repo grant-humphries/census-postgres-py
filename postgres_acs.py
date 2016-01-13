@@ -120,12 +120,37 @@ def download_with_progress(url, dir):
     return file_path
 
 
-def drop_create_acs_schema():
+def drop_create_acs_schema(drop_existing=False):
     """"""
 
     engine = ops.engine
     schema = ops.metadata.schema
-    engine.execute("DROP SCHEMA IF EXISTS {} CASCADE;".format(schema))
+
+    if drop_existing:
+        print 'dropping schema {}...'.format(schema)
+
+        # because there are so many tables in each acs schema a fully
+        # load instance of it can't be drop because it exceeds the
+        # default number of items locks that postgres allows, thus the
+        # tables are first being dropped in chunks here
+        tbl_query = engine.execute("SELECT tablename FROM pg_tables "
+                                   "WHERE schemaname = '{}';".format(schema))
+        tbl_list = [t[0] for t in tbl_query]
+
+        step = 500
+        drop_template = "DROP TABLE {} CASCADE;"
+        for start_ix in xrange(0, len(tbl_list), step):
+            end_ix = start_ix + step
+            if end_ix >= len(tbl_list):
+                end_ix = None
+
+            drops = tbl_list[start_ix: end_ix]
+            drop_str = ', '.join(['{0}.{1}'.format(schema, t) for t in drops])
+            drop_cmd = drop_template.format(drop_str)
+            engine.execute(drop_cmd)
+
+        engine.execute("DROP SCHEMA IF EXISTS {} CASCADE;".format(schema))
+
     engine.execute("CREATE SCHEMA {};".format(schema))
 
 
@@ -440,9 +465,9 @@ def main():
         schema='acs{yr}_{span}yr'.format(yr=ops.acs_year,
                                          span=ops.span))
 
-    # download_acs_data()
-    drop_create_acs_schema()
-    # create_geoheader()
+    download_acs_data()
+    drop_create_acs_schema(True)
+    create_geoheader()
     create_acs_tables()
 
 
