@@ -253,9 +253,10 @@ def create_acs_tables():
 
     stusab_ix, logrec_ix = 2, 5
 
-    print 'creating acs tables, this will take awhile...'
-    print 'currently building table:'
+    print '\ncreating acs tables, this will take awhile...'
+    print 'tables completed:'
 
+    tbl_count = 0
     for mt in acs_tables.values():
 
         # there are two variants for each table one contains the actual
@@ -275,9 +276,6 @@ def create_acs_tables():
         for tv in table_variant.values():
             mtv = tv['meta_table']
             mtv['name'] += tv['name_ext']
-
-            print '\x1b[2k{}\r',
-            print '{}\r'.format(mtv['name']),
 
             table = Table(
                 mtv['name'],
@@ -324,6 +322,13 @@ def create_acs_tables():
             # http://docs.sqlalchemy.org/en/rel_0_8/faq.html#
             # i-m-inserting-400-000-rows-with-the-orm-and-it-s-really-slow
             ops.engine.execute(table.insert(), memory_tbl)
+
+            # logging for user to keep track of progress
+            tbl_count += 1
+            if tbl_count % 50 == 0:
+                sys.stdout.write(int(tbl_count))
+            else:
+                sys.stdout.write('.')
 
 
 def add_database_comments(table, encoding=None):
