@@ -5,7 +5,7 @@ import urllib2
 import argparse
 from copy import deepcopy
 from zipfile import ZipFile
-from os.path import dirname, exists, join, realpath
+from os.path import dirname, exists, join
 
 import xlrd
 from sqlalchemy import create_engine, MetaData, Table, Column, Numeric, Text
@@ -33,7 +33,7 @@ def get_states_mapping(value_type):
         exit()
 
     states = dict()
-    states_csv_path = join(realpath('.'), 'census_states.csv')
+    states_csv_path = join(dirname(sys.argv[0]), 'census_states.csv')
     with open(states_csv_path) as states_csv:
         reader = csv.DictReader(states_csv)
         for r in reader:
