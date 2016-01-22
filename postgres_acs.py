@@ -262,7 +262,7 @@ def create_acs_tables():
             elif row['Line Number'].isdigit():
                 cur_tbl = acs_tables[row['Table ID']]
                 cur_col = Column(
-                    name='_' + row['Line Number'],
+                    name='f' + row['Line Number'],
                     type_=Numeric,
                     doc=row['Table Title']
                 )
@@ -351,7 +351,7 @@ def create_acs_tables():
             # logging for user to keep track of progress
             tbl_count += 1
             if tbl_count % 50 == 0:
-                sys.stdout.write(int(tbl_count))
+                sys.stdout.write(str(tbl_count))
             else:
                 sys.stdout.write('.')
 
@@ -465,7 +465,7 @@ def main():
         schema='acs{yr}_{span}yr'.format(yr=ops.acs_year,
                                          span=ops.span))
 
-    download_acs_data()
+    # download_acs_data()
     drop_create_acs_schema(True)
     create_geoheader()
     create_acs_tables()
