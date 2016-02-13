@@ -1,4 +1,5 @@
 import os
+import re
 import csv
 import sys
 import urllib2
@@ -185,6 +186,19 @@ def create_geoheader():
 
         columns.append(cur_col)
 
+    # The 'geoid' field that exists within tiger shapefiles is a
+    # truncated version of the full census geoid, this column will hold
+    # the truncated version
+    tiger_geoid = Column(
+        name='tiger_geoid',
+        type_=Text,
+        doc='Truncated version of geoid used to join with '
+            'to tables derived from TIGER shapefiles',
+        index=True
+    )
+    columns.append(tiger_geoid)
+    geoid_ix = [c.name for c in columns].index('geoid')
+
     print '\ncreating geoheader...'
 
     tbl_name = 'geoheader'
@@ -205,6 +219,9 @@ def create_geoheader():
         with open(join(geog_dir, geo_csv)) as geo_data:
             reader = csv.reader(geo_data)
             for row in reader:
+                # derive tiger_geoid from geoid
+                row.append(re.match('\w*US(\w*)', row[geoid_ix]).group(1))
+
                 # null values come in from the csv as empty strings
                 # this converts them such that they will be NULL in
                 # the database
@@ -465,7 +482,7 @@ def main():
         schema='acs{yr}_{span}yr'.format(yr=ops.acs_year,
                                          span=ops.span))
 
-    # download_acs_data()
+    download_acs_data()
     drop_create_acs_schema(True)
     create_geoheader()
     create_acs_tables()
