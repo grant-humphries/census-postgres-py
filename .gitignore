@@ -1,13 +1,14 @@
 # project files
 *.pyc
 data/
+census_pg_model/
 
 # pycharm config file
-*.idea
+*.idea/
 
 # buildout files
 .installed.cfg
 bin/
 eggs/
-develop_eggs/
+develop-eggs/
 parts/

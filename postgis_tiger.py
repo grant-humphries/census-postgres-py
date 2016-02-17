@@ -1,18 +1,20 @@
 import os
 import sys
+
 import argparse
-from os.path import exists, join
+from glob import glob
+from os.path import basename, exists, join, splitext
 from zipfile import ZipFile
 
 import fiona
 import sqlalchemy
-from sqlalchemy \
-    import create_engine, MetaData, Table, Column, Float, Integer, Text
+from sqlalchemy import create_engine, MetaData, \
+    Table, Column, ForeignKey, Float, Integer, Text
 from geoalchemy2 import Geometry
 from geoalchemy2.elements import WKTElement
 from shapely.geometry import shape, MultiPolygon
 
-import postgres_acs as pg_acs
+import utilities as utils
 
 TIGER_PRODUCT = {
     'b': 'TABBLOCK10',
@@ -46,7 +48,7 @@ def download_tiger_data():
                                yr=ops.tiger_year, fips=state_fips[st],
                                pd_name=pd_name)
 
-            pd_path = pg_acs.download_with_progress(pd_url, pd_dir)
+            pd_path = utils.download_with_progress(pd_url, pd_dir)
             with ZipFile(pd_path, 'r') as z:
                 print '\nunzipping...'
                 z.extractall(pd_dir)
@@ -160,6 +162,11 @@ def create_tiger_table(metadata, product, drop_existing=False):
             srid=int(metadata['crs']['init'].split(':')[1])))
     columns.append(geom_col)
 
+    if ops.acs_mods:
+        for mod in ops.acs_mods:
+
+
+
     for f_name, f_type in metadata['schema']['properties'].items():
         if f_name in TIGER_PRIMARY_KEY:
             pk_bool = True
@@ -185,7 +192,7 @@ def process_options(arglist=None):
     """Define options that users can pass through the command line, in this
     case these are all postgres database parameters"""
 
-    parser = argparse.ArgumentParser()
+    parser = utils.add_postgres_options(argparse.ArgumentParser())
     parser.add_argument(
         '-s', '--states',
         nargs='+',
@@ -215,54 +222,45 @@ def process_options(arglist=None):
         help='desired TIGER data product, choices are: '
              '"b": blocks, "bg": block groups, "t": tracts'
     )
-    parser.add_argument(
-        '-H', '--host',
-        default='localhost',
-        help='url of postgres host server'
-    )
-    parser.add_argument(
-        '-u', '--user',
-        default='postgres',
-        help='postgres user name'
-    )
-    parser.add_argument(
-        '-d', '--dbname',
-        default='census',
-        help='name of target database'
-    )
-    parser.add_argument(
-        '-p', '--password',
-        required=True,
-        help='postgres password for supplied user'
-    )
 
     options = parser.parse_args(arglist)
     return options
 
 
 def main():
-    """
-    >> python postgis_tiger.py -y 2015 -s OR WA -p ur_pass
-    """
+    """>> python postgis_tiger.py -y 2015 -s OR WA -p ur_pass"""
 
     global state_fips
-    state_fips = pg_acs.get_states_mapping('fips')
+    state_fips = utils.get_states_mapping('fips')
 
     global ops
     args = sys.argv[1:]
     ops = process_options(args)
 
-    pg_conn_str = 'postgres://{user}:{pw}@{host}/{db}'.format(
+    pg_url = 'postgres://{user}:{pw}@{host}/{db}'.format(
         user=ops.user, pw=ops.password, host=ops.host, db=ops.dbname)
 
-    ops.engine = create_engine(pg_conn_str)
+    ops.engine = create_engine(pg_url)
     ops.metadata = MetaData(
         bind=ops.engine,
         schema='tiger{yr}'.format(yr=ops.tiger_year))
 
+    #
+    wild_mod_name = 'acs{yr}_[135]yr.py'.format(yr=ops.tiger_year - 1)
+    wild_mod_path = join(os.getcwd(), utils.CENSUS_PG_MODEL, wild_mod_name)
+    acs_mod_paths = glob(wild_mod_path)
+
+    ops.acs_mods = list()
+    if acs_mod_paths:
+        for mod_path in acs_mod_paths:
+            mod_name = splitext(basename(mod_path))[0]
+            module = __import__(mod_name, fromlist=utils.GEOHEADER)
+            ops.acs_mods.append(module)
+
     # download_tiger_data()
     create_tiger_schema(True)
     load_tiger_data()
+    utils.generate_model(ops.metadata)
 
 
 if __name__ == '__main__':

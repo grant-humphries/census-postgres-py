@@ -2,46 +2,28 @@ import os
 import re
 import csv
 import sys
-import urllib2
+
 import argparse
 from copy import deepcopy
 from zipfile import ZipFile
 from os.path import dirname, exists, join
 
 import xlrd
-from sqlalchemy import create_engine, MetaData, Table, Column, Numeric, Text
+from sqlalchemy import create_engine, Column,\
+    ForeignKeyConstraint, MetaData, Numeric, Table, Text
+
+import utilities as utils
+
+ACS_PRIMARY_KEY = {
+    'stusab': 'State Postal Abbreviation',
+    'logrecno': 'Logical Record Number'
+}
 
 # geography groupings offered by the Census Bureau
 ACS_GEOGRAPHY = [
     'Tracts_Block_Groups_Only',
     'All_Geographies_Not_Tracts_Block_Groups'
 ]
-ACS_PRIMARY_KEY = [
-    'STUSAB',
-    'LOGRECNO'
-]
-
-
-def get_states_mapping(value_type):
-    """Maps state abbreviations to their full name or FIPS code"""
-
-    value_dict = {'name': 'State', 'fips': 'FIPS Code'}
-    try:
-        value_field = value_dict[value_type]
-    except KeyError:
-        print 'Invalid value type supplied for states mapping'
-        print 'options are: "name" and "fips"'
-        exit()
-
-    states = dict()
-    states_csv_path = join(dirname(sys.argv[0]), 'census_states.csv')
-    with open(states_csv_path) as states_csv:
-        reader = csv.DictReader(states_csv)
-        for r in reader:
-            states[r['Abbreviation']] = r[value_field].replace(' ', '_')
-
-    return states
-
 
 def download_acs_data():
     """"""
@@ -64,7 +46,7 @@ def download_acs_data():
                             base_url=acs_url, span=ops.span,
                             state=st_name, geography=geog)
 
-            geog_path = download_with_progress(geog_url, geog_dir)
+            geog_path = utils.download_with_progress(geog_url, geog_dir)
             with ZipFile(geog_path, 'r') as z:
                 print '\nunzipping...'
                 z.extractall(dirname(geog_path))
@@ -76,7 +58,7 @@ def download_acs_data():
                  'Summary_FileTemplates.zip'.format(
                       base_url=acs_url, yr=ops.acs_year, span=ops.span)
 
-    schema_path = download_with_progress(schema_url, ops.data_dir)
+    schema_path = utils.download_with_progress(schema_url, ops.data_dir)
     with ZipFile(schema_path, 'r') as z:
         print '\nunzipping...'
         z.extractall(dirname(schema_path))
@@ -85,40 +67,7 @@ def download_acs_data():
     # extract the ACS tables from the sequences
     lookup_url = '{base_url}/documentation/user_tools/' \
                  '{lookup}'.format(base_url=acs_url, lookup=ops.lookup_file)
-    download_with_progress(lookup_url, ops.data_dir)
-
-
-def download_with_progress(url, dir):
-    """"""
-
-    # function adapted from: http://stackoverflow.com/questions/22676
-
-    file_name = url.split('/')[-1]
-    file_path = join(dir, file_name)
-    u = urllib2.urlopen(url)
-    f = open(file_path, 'wb')
-    meta = u.info()
-    file_size = int(meta.getheaders("Content-Length")[0])
-    print "Downloading: %s Bytes: %s" % (file_name, file_size)
-
-    file_size_dl = 0
-    block_sz = 8192
-    while True:
-        buffer_ = u.read(block_sz)
-        if not buffer_:
-            break
-
-        file_size_dl += len(buffer_)
-        f.write(buffer_)
-
-        status = '{0:10d}  [{2:3.2f}%]'.format(
-            file_size_dl, file_size, file_size_dl * 100. / file_size)
-        status += chr(8) * (len(status) + 1)
-        print status,
-
-    f.close()
-
-    return file_path
+    utils.download_with_progress(lookup_url, ops.data_dir)
 
 
 def drop_create_acs_schema(drop_existing=False):
@@ -179,7 +128,7 @@ def create_geoheader():
             type_=Text,
             doc=sheet.cell_value(1, cx).encode('utf8')
         )
-        if cur_col.name.upper() in ACS_PRIMARY_KEY:
+        if cur_col.name.lower() in ACS_PRIMARY_KEY:
             cur_col.primary_key = True
         else:
             cur_col.primary = False
@@ -201,7 +150,7 @@ def create_geoheader():
 
     print '\ncreating geoheader...'
 
-    tbl_name = 'geoheader'
+    tbl_name = utils.GEOHEADER
     tbl_comment = 'Intermediary table used to join ACS and TIGER data'
     table = Table(
         tbl_name,
@@ -210,6 +159,8 @@ def create_geoheader():
         info=tbl_comment)
     table.create()
     add_database_comments(table)
+
+    return
 
     geog_dir = join(ops.data_dir, ACS_GEOGRAPHY[0].lower())
     for st in ops.states:
@@ -251,17 +202,11 @@ def create_acs_tables():
                     'comment': row['Table Title'],
                     'columns': [
                         Column(
-                            name='stusab',
+                            name=k,
                             type_=Text,
-                            doc='State Postal Abbreviation',
+                            doc=v,
                             primary_key=True
-                        ),
-                        Column(
-                            name='logrecno',
-                            type_=Text,
-                            doc='Logical Record Number',
-                            primary_key=True
-                        )
+                        ) for k, v in ACS_PRIMARY_KEY.items()
                     ]
                 }
                 acs_tables[row['Table ID']] = meta_table
@@ -293,13 +238,21 @@ def create_acs_tables():
         '.': 0
     })
 
+    # the stusab, logrecno combo is a primary key to all tables and
+    # those two in geoheader serve as a foreign key to the others
     stusab_ix, logrec_ix = 2, 5
+    foreign_key = ForeignKeyConstraint(
+        ACS_PRIMARY_KEY.keys(),
+        ['{0}.{1}'.format(utils.GEOHEADER, k) for k in ACS_PRIMARY_KEY.keys()]
+    )
 
     print '\ncreating acs tables, this will take awhile...'
     print 'tables completed:'
 
     tbl_count = 0
     for mt in acs_tables.values():
+        # columns and foreign keys are accepted as *args for table object
+        mt['columns'].append(deepcopy(foreign_key))
 
         # there are two variants for each table one contains the actual
         # data and other contains the corresponding margin of error for
@@ -326,6 +279,10 @@ def create_acs_tables():
                 info=mtv['comment'])
             table.create()
             add_database_comments(table, 'cp1252')
+
+
+            continue
+
 
             # create a list of the indices that for the columns that will
             # be extracted from the defined sequence for the current table
@@ -409,7 +366,7 @@ def add_database_comments(table, encoding=None):
 def process_options(arg_list=None):
     """"""
 
-    parser = argparse.ArgumentParser()
+    parser = utils.add_postgres_options(argparse.ArgumentParser())
     parser.add_argument(
         '-s', '--states',
         nargs='+',
@@ -436,26 +393,6 @@ def process_options(arg_list=None):
         dest='data_dir',
         help='file path at which downloaded ACS data is to be saved'
     )
-    parser.add_argument(
-        '-H', '--host',
-        default='localhost',
-        help='url of postgres host server'
-    )
-    parser.add_argument(
-        '-u', '--user',
-        default='postgres',
-        help='postgres user name'
-    )
-    parser.add_argument(
-        '-d', '--dbname',
-        default='census',
-        help='name of target database'
-    )
-    parser.add_argument(
-        '-p', '--password',
-        required=True,
-        help='postgres password for supplied user'
-    )
 
     options = parser.parse_args(arg_list)
     return options
@@ -465,16 +402,16 @@ def main():
     """"""
 
     global state_names
-    state_names = get_states_mapping('name')
+    state_names = utils.get_states_mapping('name')
 
     global ops
     args = sys.argv[1:]
     ops = process_options(args)
 
-    pg_conn_str = 'postgres://{user}:{pw}@{host}/{db}'.format(
+    pg_url = 'postgres://{user}:{pw}@{host}/{db}'.format(
         user=ops.user, pw=ops.password, host=ops.host, db=ops.dbname)
 
-    ops.engine = create_engine(pg_conn_str)
+    ops.engine = create_engine(pg_url)
     ops.lookup_file = 'ACS_{span}yr_Seq_Table_Number_' \
                       'Lookup.txt'.format(span=ops.span)
     ops.metadata = MetaData(
@@ -482,10 +419,11 @@ def main():
         schema='acs{yr}_{span}yr'.format(yr=ops.acs_year,
                                          span=ops.span))
 
-    download_acs_data()
+    # download_acs_data()
     drop_create_acs_schema(True)
     create_geoheader()
-    create_acs_tables()
+    # create_acs_tables()
+    utils.generate_model(ops.metadata)
 
 
 if __name__ == '__main__':
