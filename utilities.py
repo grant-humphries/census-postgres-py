@@ -66,12 +66,18 @@ def download_with_progress(url, dir):
     return file_path
 
 
-def generate_model(metadata):
+def generate_model(metadata, table_groups=None):
     """"""
 
     url = metadata.bind.url
     schema = metadata.schema
     model_dir = join(os.getcwd(), CENSUS_PG_MODEL)
+
+    if not table_groups:
+        table_groups = dict()
+        for schema_table in metadata.tables:
+            table = schema_table.split('.')[1]
+            table_groups[table] = table
 
     if not exists(model_dir):
         os.makedirs(model_dir)
@@ -80,19 +86,29 @@ def generate_model(metadata):
     schema_dir = join(model_dir, schema)
     if not exists(schema_dir):
         os.makedirs(schema_dir)
-        open(join(model_dir, '__init__.py'), 'w').close()
+        open(join(schema_dir, '__init__.py'), 'w').close()
 
     codegen_template = './bin/sqlacodegen ' \
-                       '--schema {0} --tables {1} --outfile {2} {url}'
-    for schema_table in metadata.tables:
-        # strip the schema name
-        table = schema_table.split('.')[1]
-        model_file = join(schema_dir, '{}.py'.format(table))
-        codegen = codegen_template.format(schema, table, model_file, url=url)
+                       '--schema {0} --tables {1} ' \
+                       '--outfile {2} {url}'
 
-        print '\ngenerating sqlalchemy model at: {}'.format(model_file)
-        print codegen
+    print '\ngenerating sqlalchemy model at: {}'.format(schema_dir)
+    print 'table groups written:'
+
+    i = 0
+    for table_key, table_list in table_groups.items():
+        table_str = ','.join(sorted(table_list))
+        model_file = join(schema_dir, '{}.py'.format(table_key))
+        codegen = codegen_template.format(
+            schema, table_str, model_file, url=url)
         subprocess.call(codegen)
+
+        # logging for user
+        i += 1
+        if i % 50 == 0:
+            sys.stdout.write(str(i))
+        else:
+            sys.stdout.write('.')
 
 
 def add_postgres_options(parser):

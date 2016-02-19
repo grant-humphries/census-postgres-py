@@ -2,10 +2,10 @@ import os
 import re
 import csv
 import sys
-
 import argparse
 from copy import deepcopy
 from zipfile import ZipFile
+from collections import defaultdict
 from os.path import dirname, exists, join
 
 import xlrd
@@ -24,6 +24,7 @@ ACS_GEOGRAPHY = [
     'Tracts_Block_Groups_Only',
     'All_Geographies_Not_Tracts_Block_Groups'
 ]
+
 
 def download_acs_data():
     """"""
@@ -79,12 +80,13 @@ def drop_create_acs_schema(drop_existing=False):
     if drop_existing:
         print 'dropping schema {}...'.format(schema)
 
-        # because there are so many tables in each acs schema a fully
-        # load instance of it can't be drop because it exceeds the
-        # default number of items locks that postgres allows, thus the
-        # tables are first being dropped in chunks here
-        tbl_query = engine.execute("SELECT tablename FROM pg_tables "
-                                   "WHERE schemaname = '{}';".format(schema))
+        # drop in tables in chunks so max number of locks isn't exceeded,
+        # geoheader need to be dropped last since it is a foreign key to
+        # all other tables
+        tbl_query = engine.execute(
+            "SELECT tablename FROM pg_tables "
+            "WHERE schemaname = '{0}' "
+            "AND tablename != '{1}';".format(schema, utils.GEOHEADER))
         tbl_list = [t[0] for t in tbl_query]
 
         step = 500
@@ -422,8 +424,15 @@ def main():
     # download_acs_data()
     drop_create_acs_schema(True)
     create_geoheader()
-    # create_acs_tables()
-    utils.generate_model(ops.metadata)
+    create_acs_tables()
+
+    table_groups = defaultdict(list)
+    for schema_table in ops.metadata.tables:
+        if utils.GEOHEADER not in schema_table:
+            table = schema_table.split('.')[1]
+            key = table[:6]
+            table_groups[key].append(table)
+    utils.generate_model(ops.metadata, table_groups)
 
 
 if __name__ == '__main__':
