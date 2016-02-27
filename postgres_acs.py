@@ -13,6 +13,7 @@ from sqlalchemy import create_engine, Column,\
     ForeignKeyConstraint, MetaData, Numeric, Table, Text
 
 import utilities as utils
+from utilities import GEOHEADER, TIGER_GEOID
 
 ACS_PRIMARY_KEY = {
     'stusab': 'State Postal Abbreviation',
@@ -86,7 +87,7 @@ def drop_create_acs_schema(drop_existing=False):
         tbl_query = engine.execute(
             "SELECT tablename FROM pg_tables "
             "WHERE schemaname = '{0}' "
-            "AND tablename != '{1}';".format(schema, utils.GEOHEADER))
+            "AND tablename != '{1}';".format(schema, GEOHEADER))
         tbl_list = [t[0] for t in tbl_query]
 
         step = 500
@@ -141,28 +142,46 @@ def create_geoheader():
     # truncated version of the full census geoid, this column will hold
     # the truncated version
     tiger_geoid = Column(
-        name='tiger_geoid',
+        name=TIGER_GEOID,
         type_=Text,
         doc='Truncated version of geoid used to join with '
             'to tables derived from TIGER shapefiles',
+        unique=True,
         index=True
     )
     columns.append(tiger_geoid)
-    geoid_ix = [c.name for c in columns].index('geoid')
 
-    print '\ncreating geoheader...'
-
-    tbl_name = utils.GEOHEADER
+    tbl_name = GEOHEADER
     tbl_comment = 'Intermediary table used to join ACS and TIGER data'
     table = Table(
         tbl_name,
         ops.metadata,
         *columns,
         info=tbl_comment)
+
+    print '\ncreating geoheader...'
     table.create()
     add_database_comments(table)
 
-    return
+    # prep to populate tiger geoid column
+    field_names = [c.name for c in columns]
+    geoid_ix = field_names.index('geoid')
+    component_ix = field_names.index('component')
+    sumlevel_ix = field_names.index('sumlevel')
+    tiger_ix = field_names.index(TIGER_GEOID)
+
+    # these summary levels are excluded from the tiger_geoid because
+    # their values are not unique from each other, sumlevels 050 and 160
+    # also conflict with these, but remain unique if these are excluded
+    sumlev_exclude = [
+        '320', '610', '612',
+        '620', '622', '795',
+        '950', '960', '970'
+    ]
+
+    # more info on summary levels here:
+    # http://www2.census.gov/programs-surveys/acs/summary_file/2014/
+    # documentation/tech_docs/ACS_2014_SF_5YR_Appendices.xls
 
     geog_dir = join(ops.data_dir, ACS_GEOGRAPHY[0].lower())
     for st in ops.states:
@@ -172,8 +191,14 @@ def create_geoheader():
         with open(join(geog_dir, geo_csv)) as geo_data:
             reader = csv.reader(geo_data)
             for row in reader:
-                # derive tiger_geoid from geoid
-                row.append(re.match('\w*US(\w*)', row[geoid_ix]).group(1))
+                # a component value of '00' means total population, all
+                # other values are subsets of the population
+                tiger = None
+                comp, sumlev = row[component_ix], row[sumlevel_ix]
+                if comp == '00' and sumlev not in sumlev_exclude:
+                    tiger = (re.match('\w*US(\w*)', row[geoid_ix]).group(1))
+
+                row.insert(tiger_ix, tiger)
 
                 # null values come in from the csv as empty strings
                 # this converts them such that they will be NULL in
@@ -245,7 +270,7 @@ def create_acs_tables():
     stusab_ix, logrec_ix = 2, 5
     foreign_key = ForeignKeyConstraint(
         ACS_PRIMARY_KEY.keys(),
-        ['{0}.{1}'.format(utils.GEOHEADER, k) for k in ACS_PRIMARY_KEY.keys()]
+        ['{0}.{1}'.format(GEOHEADER, k) for k in ACS_PRIMARY_KEY.keys()]
     )
 
     print '\ncreating acs tables, this will take awhile...'
@@ -380,6 +405,7 @@ def process_options(arg_list=None):
     parser.add_argument(
         '-y', '--year',
         required=True,
+        type=int,
         dest='acs_year',
         help='most recent year of desired ACS data product'
     )
@@ -424,15 +450,17 @@ def main():
     # download_acs_data()
     drop_create_acs_schema(True)
     create_geoheader()
-    create_acs_tables()
+    # create_acs_tables()
 
-    table_groups = defaultdict(list)
-    for schema_table in ops.metadata.tables:
-        if utils.GEOHEADER not in schema_table:
-            table = schema_table.split('.')[1]
-            key = table[:6]
-            table_groups[key].append(table)
-    utils.generate_model(ops.metadata, table_groups)
+    # table_groups = defaultdict(list)
+    # for schema_table in ops.metadata.tables:
+    #     table = schema_table.split('.')[1]
+    #     if table != GEOHEADER:
+    #         key = table[:6]
+    #     else:
+    #         key = table
+    #     table_groups[key].append(table)
+    # utils.generate_model(ops.metadata, table_groups)
 
 
 if __name__ == '__main__':

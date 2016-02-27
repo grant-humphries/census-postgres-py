@@ -9,12 +9,13 @@ from zipfile import ZipFile
 import fiona
 import sqlalchemy
 from sqlalchemy import create_engine, MetaData, \
-    Table, Column, ForeignKey, Float, Integer, Text
+    Table, Column, ForeignKeyConstraint, Float, Integer, Text
 from geoalchemy2 import Geometry
 from geoalchemy2.elements import WKTElement
 from shapely.geometry import shape, MultiPolygon
 
 import utilities as utils
+from utilities import GEOHEADER, TIGER_GEOID
 
 TIGER_PRODUCT = {
     'b': 'TABBLOCK10',
@@ -86,13 +87,14 @@ def load_tiger_data():
             pd_shp = join(pd_dir, shp_name)
 
             with fiona.open(pd_shp) as tiger_shape:
-                metadata = tiger_shape.meta.copy()
-                epsg = int(metadata['crs']['init'].split(':')[1])
-                table = create_tiger_table(metadata, pd)
+                shp_metadata = tiger_shape.meta.copy()
+                epsg = int(shp_metadata['crs']['init'].split(':')[1])
+                table = create_tiger_table(shp_metadata, pd)
 
                 print '\nloading shapefile "{0}" ' \
                       'into table: "{1}.{2}":'.format(
                            shp_name, ops.metadata.schema, table.name)
+                print 'features inserted:'
 
                 memory_tbl = list()
                 max_fid = max(tiger_shape.keys())
@@ -124,14 +126,14 @@ def load_tiger_data():
                             sys.stdout.write('..')
 
 
-def create_tiger_table(metadata, product, drop_existing=False):
+def create_tiger_table(shp_metadata, product, drop_existing=False):
     """metadata parameter must be a fiona metadata object"""
 
     # handle cases where the table already exists
+    schema = ops.metadata.schema
     table_name = TIGER_PRODUCT[product].lower()
     if not drop_existing:
         engine = ops.engine
-        schema = ops.metadata.schema
         if engine.dialect.has_table(engine.connect(), table_name, schema):
             full_name = '{0}.{1}'.format(schema, table_name)
             print 'Table {} already exists, ' \
@@ -150,7 +152,7 @@ def create_tiger_table(metadata, product, drop_existing=False):
     # multipolygons within shapefiles, so we must assume geoms of
     # that type are multi's or postgis may throw an error, fiona's
     # metadata always assumes single geoms so multi is appended
-    geom_type = metadata['schema']['geometry'].upper()
+    geom_type = shp_metadata['schema']['geometry'].upper()
     if geom_type == 'POLYGON':
         geom_type = 'MULTI{}'.format(geom_type)
 
@@ -159,31 +161,38 @@ def create_tiger_table(metadata, product, drop_existing=False):
         name='geom',
         type_=Geometry(
             geometry_type=geom_type,
-            srid=int(metadata['crs']['init'].split(':')[1])))
+            srid=int(shp_metadata['crs']['init'].split(':')[1])))
     columns.append(geom_col)
 
-    if ops.acs_mods:
-        for mod in ops.acs_mods:
-
-
-
-    for f_name, f_type in metadata['schema']['properties'].items():
-        if f_name in TIGER_PRIMARY_KEY:
-            pk_bool = True
-        else:
-            pk_bool = False
-
+    for f_name, f_type in shp_metadata['schema']['properties'].items():
+        col_name = f_name.lower()
         attr_col = Column(
-            name=f_name.lower(),
-            type_=fiona2db[f_type.split(':')[0]],
-            primary_key=pk_bool)
+            name=col_name,
+            type_=fiona2db[f_type.split(':')[0]])
+
+        if f_name in TIGER_PRIMARY_KEY:
+            attr_col.primary_key = True
+            pk_col = col_name
+
+        print attr_col.foreign_keys
         columns.append(attr_col)
+
+    meta_tables = ops.metadata.tables
+    geoheaders = [meta_tables[t] for t in meta_tables if GEOHEADER in t]
+    for gh in geoheaders:
+        foreign_col = gh.columns[TIGER_GEOID]
+        fk = ForeignKeyConstraint([pk_col], [foreign_col])
+        columns.append(fk)
 
     table = Table(
         table_name,
         ops.metadata,
         *columns)
     table.create()
+
+    print table
+    print table.foreign_keys
+    exit()
 
     return table
 
@@ -204,6 +213,7 @@ def process_options(arglist=None):
     parser.add_argument(
         '-y', '--year',
         required=True,
+        type=int,
         dest='tiger_year',
         help='year of the desired TIGER data product'
     )
@@ -245,17 +255,32 @@ def main():
         bind=ops.engine,
         schema='tiger{yr}'.format(yr=ops.tiger_year))
 
-    #
-    wild_mod_name = 'acs{yr}_[135]yr.py'.format(yr=ops.tiger_year - 1)
-    wild_mod_path = join(os.getcwd(), utils.CENSUS_PG_MODEL, wild_mod_name)
-    acs_mod_paths = glob(wild_mod_path)
+    # the newest acs is generally one year behind the newest tiger data
+    # so I'm pairing them as such here
+    acs_year = ops.tiger_year - 1
+    for i in (1, 3, 5):
+        acs_schema = 'acs{yr}_{span}yr'.format(yr=acs_year, span=i)
+        try:
+            ops.metadata.reflect(schema=acs_schema, only=[GEOHEADER])
+        except sqlalchemy.exc.InvalidRequestError:
+            pass
 
-    ops.acs_mods = list()
-    if acs_mod_paths:
-        for mod_path in acs_mod_paths:
-            mod_name = splitext(basename(mod_path))[0]
-            module = __import__(mod_name, fromlist=utils.GEOHEADER)
-            ops.acs_mods.append(module)
+    # the newest acs is generally one year behind the newest tiger data
+    # so I'm pairing them as such here
+    # wild_mod_name = 'acs{yr}_[135]yr'.format(yr=ops.tiger_year - 1)
+    # wild_mod_path = join(os.getcwd(), utils.CENSUS_PG_MODEL, wild_mod_name)
+    # acs_mod_paths = glob(wild_mod_path)
+    #
+    # ops.geoheaders = list()
+    # if acs_mod_paths:
+    #     for mod_path in acs_mod_paths:
+    #         mod_name = basename(mod_path)
+    #         import_name = '.'.join(
+    #             [utils.CENSUS_PG_MODEL, mod_name, utils.GEOHEADER])
+    #
+    #         module = __import__(import_name, fromlist=[utils.GEOHEADER.title()])
+    #         geoheader = getattr(module, utils.GEOHEADER.title())
+    #         ops.geoheaders.append(geoheader)
 
     # download_tiger_data()
     create_tiger_schema(True)

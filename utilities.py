@@ -9,6 +9,7 @@ import urllib2
 from os.path import dirname, exists, join
 
 GEOHEADER = 'geoheader'
+TIGER_GEOID = 'tiger_geoid'
 CENSUS_PG_MODEL = 'census_pg_model'
 
 
@@ -77,7 +78,7 @@ def generate_model(metadata, table_groups=None):
         table_groups = dict()
         for schema_table in metadata.tables:
             table = schema_table.split('.')[1]
-            table_groups[table] = table
+            table_groups[table] = [table]
 
     if not exists(model_dir):
         os.makedirs(model_dir)
