@@ -115,6 +115,13 @@ def generate_model(metadata, table_groups=None):
 def add_postgres_options(parser):
     """"""
 
+    # if the PGPASSWORD environment variable has been set use it
+    password = os.environ.get('PGPASSWORD')
+    if password:
+        pw_require = False
+    else:
+        pw_require = True
+
     parser.add_argument(
         '-H', '--host',
         default='localhost',
@@ -132,7 +139,8 @@ def add_postgres_options(parser):
     )
     parser.add_argument(
         '-p', '--password',
-        required=True,
+        required=pw_require,
+        default=password,
         help='postgres password for supplied user'
     )
 

@@ -174,7 +174,6 @@ def create_tiger_table(shp_metadata, product, drop_existing=False):
             attr_col.primary_key = True
             pk_col = col_name
 
-        print attr_col.foreign_keys
         columns.append(attr_col)
 
     meta_tables = ops.metadata.tables
@@ -189,10 +188,6 @@ def create_tiger_table(shp_metadata, product, drop_existing=False):
         ops.metadata,
         *columns)
     table.create()
-
-    print table
-    print table.foreign_keys
-    exit()
 
     return table
 
