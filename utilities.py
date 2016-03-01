@@ -11,6 +11,7 @@ from os.path import dirname, exists, join
 GEOHEADER = 'geoheader'
 TIGER_GEOID = 'tiger_geoid'
 CENSUS_PG_MODEL = 'census_pg_model'
+ACS_SPANS = (1, 3, 5)
 
 
 def get_states_mapping(value_type):

@@ -13,7 +13,7 @@ from sqlalchemy import create_engine, Column,\
     ForeignKeyConstraint, MetaData, Numeric, Table, Text
 
 import utilities as utils
-from utilities import GEOHEADER, TIGER_GEOID
+from utilities import ACS_SPANS, GEOHEADER, TIGER_GEOID
 
 ACS_PRIMARY_KEY = {
     'stusab': 'State Postal Abbreviation',
@@ -412,7 +412,7 @@ def process_options(arg_list=None):
     parser.add_argument(
         '-l', '--span', '--length',
         default=5,
-        choices=(1, 3, 5),
+        choices=ACS_SPANS,
         help='number of years that ACS data product covers'
     )
     parser.add_argument(
@@ -421,7 +421,15 @@ def process_options(arg_list=None):
         dest='data_dir',
         help='file path at which downloaded ACS data is to be saved'
     )
+    parser.add_argument(
+        '-nm', '--no_model',
+        dest='model',
+        action='store_false',
+        help='by default a sqlalchemy model of the schema is created use this'
+             'flag to opt out of that functionality'
+    )
 
+    parser.set_defaults(model=True)
     options = parser.parse_args(arg_list)
     return options
 
@@ -450,17 +458,18 @@ def main():
     # download_acs_data()
     drop_create_acs_schema(True)
     create_geoheader()
-    # create_acs_tables()
+    create_acs_tables()
 
-    # table_groups = defaultdict(list)
-    # for schema_table in ops.metadata.tables:
-    #     table = schema_table.split('.')[1]
-    #     if table != GEOHEADER:
-    #         key = table[:6]
-    #     else:
-    #         key = table
-    #     table_groups[key].append(table)
-    # utils.generate_model(ops.metadata, table_groups)
+    if ops.model:
+        table_groups = defaultdict(list)
+        for schema_table in ops.metadata.tables:
+            table = schema_table.split('.')[1]
+            if table != GEOHEADER:
+                key = table[:6]
+            else:
+                key = table
+            table_groups[key].append(table)
+        utils.generate_model(ops.metadata, table_groups)
 
 
 if __name__ == '__main__':

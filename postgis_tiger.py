@@ -2,8 +2,7 @@ import os
 import sys
 
 import argparse
-from glob import glob
-from os.path import basename, exists, join, splitext
+from os.path import exists, join
 from zipfile import ZipFile
 
 import fiona
@@ -15,17 +14,17 @@ from geoalchemy2.elements import WKTElement
 from shapely.geometry import shape, MultiPolygon
 
 import utilities as utils
-from utilities import GEOHEADER, TIGER_GEOID
+from utilities import ACS_SPANS, GEOHEADER, TIGER_GEOID
 
 TIGER_PRODUCT = {
     'b': 'TABBLOCK10',
     'bg': 'BG',
     't': 'TRACT'
 }
-TIGER_PRIMARY_KEY = {
+TIGER_PRIMARY_KEY = [
     'GEOID',
     'GEOID10'
-}
+]
 
 
 def download_tiger_data():
@@ -44,10 +43,10 @@ def download_tiger_data():
 
         for st in ops.states:
             pd_url = '{base_url}/{pd_class}/' \
-                          'tl_{yr}_{fips}_{pd_name}.zip'.format(
-                               base_url=tiger_url, pd_class=pd_class,
-                               yr=ops.tiger_year, fips=state_fips[st],
-                               pd_name=pd_name)
+                      'tl_{yr}_{fips}_{pd_name}.zip'.format(
+                           base_url=tiger_url, pd_class=pd_class,
+                           yr=ops.tiger_year, fips=state_fips[st],
+                           pd_name=pd_name)
 
             pd_path = utils.download_with_progress(pd_url, pd_dir)
             with ZipFile(pd_path, 'r') as z:
@@ -176,12 +175,15 @@ def create_tiger_table(shp_metadata, product, drop_existing=False):
 
         columns.append(attr_col)
 
-    meta_tables = ops.metadata.tables
-    geoheaders = [meta_tables[t] for t in meta_tables if GEOHEADER in t]
-    for gh in geoheaders:
-        foreign_col = gh.columns[TIGER_GEOID]
-        fk = ForeignKeyConstraint([pk_col], [foreign_col])
-        columns.append(fk)
+    # add a foreign key to the ACS data unless options indicate not to, blocks
+    # (pk of 'GEOID10') aren't in the ACS so can't have the constraint
+    if ops.foreign_key and pk_col == TIGER_PRIMARY_KEY[0]:
+        meta_tables = ops.metadata.tables
+        geoheaders = [meta_tables[t] for t in meta_tables if GEOHEADER in t]
+        for gh in geoheaders:
+            foreign_col = gh.columns[TIGER_GEOID]
+            fk = ForeignKeyConstraint([pk_col], [foreign_col])
+            columns.append(fk)
 
     table = Table(
         table_name,
@@ -202,7 +204,7 @@ def process_options(arglist=None):
         nargs='+',
         required=True,
         choices=sorted(state_fips.keys()),
-        help='states for which data is to be include in acs database, '
+        help='states for which TIGER data is to be include in database, '
              'indicate states with two letter postal codes'
     )
     parser.add_argument(
@@ -227,13 +229,28 @@ def process_options(arglist=None):
         help='desired TIGER data product, choices are: '
              '"b": blocks, "bg": block groups, "t": tracts'
     )
+    parser.add_argument(
+        '-nfk', '--no_foreign_key',
+        dest='foreign_key',
+        action='store_false',
+        help='by default a foreign key to the ACS data is created if that'
+             'data exists, use this flag to disable that constraint'
+    )
+    parser.add_argument(
+        '-nm', '--no_model',
+        dest='model',
+        action='store_false',
+        help='by default a sqlalchemy model of the schema is created use this'
+             'flag to opt out of that functionality'
+    )
 
+    parser.set_defaults(foreign_key=True, model=True)
     options = parser.parse_args(arglist)
     return options
 
 
 def main():
-    """>> python postgis_tiger.py -y 2015 -s OR WA -p ur_pass"""
+    """>> python postgis_tiger.py -y 2015 -s OR WA"""
 
     global state_fips
     state_fips = utils.get_states_mapping('fips')
@@ -250,37 +267,22 @@ def main():
         bind=ops.engine,
         schema='tiger{yr}'.format(yr=ops.tiger_year))
 
-    # the newest acs is generally one year behind the newest tiger data
-    # so I'm pairing them as such here
-    acs_year = ops.tiger_year - 1
-    for i in (1, 3, 5):
-        acs_schema = 'acs{yr}_{span}yr'.format(yr=acs_year, span=i)
-        try:
-            ops.metadata.reflect(schema=acs_schema, only=[GEOHEADER])
-        except sqlalchemy.exc.InvalidRequestError:
-            pass
-
-    # the newest acs is generally one year behind the newest tiger data
-    # so I'm pairing them as such here
-    # wild_mod_name = 'acs{yr}_[135]yr'.format(yr=ops.tiger_year - 1)
-    # wild_mod_path = join(os.getcwd(), utils.CENSUS_PG_MODEL, wild_mod_name)
-    # acs_mod_paths = glob(wild_mod_path)
-    #
-    # ops.geoheaders = list()
-    # if acs_mod_paths:
-    #     for mod_path in acs_mod_paths:
-    #         mod_name = basename(mod_path)
-    #         import_name = '.'.join(
-    #             [utils.CENSUS_PG_MODEL, mod_name, utils.GEOHEADER])
-    #
-    #         module = __import__(import_name, fromlist=[utils.GEOHEADER.title()])
-    #         geoheader = getattr(module, utils.GEOHEADER.title())
-    #         ops.geoheaders.append(geoheader)
+    if ops.foreign_key:
+        # tiger data is generally 1 year more recent that the acs, thus
+        # they're being pair as such here
+        acs_year = ops.tiger_year - 1
+        for i in ACS_SPANS:
+            acs_schema = 'acs{yr}_{span}yr'.format(yr=acs_year, span=i)
+            try:
+                ops.metadata.reflect(schema=acs_schema, only=[GEOHEADER])
+            except sqlalchemy.exc.InvalidRequestError:
+                pass
 
     # download_tiger_data()
     create_tiger_schema(True)
     load_tiger_data()
-    utils.generate_model(ops.metadata)
+    if ops.model:
+        utils.generate_model(ops.metadata)
 
 
 if __name__ == '__main__':
