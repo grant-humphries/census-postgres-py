@@ -8,10 +8,10 @@ import subprocess
 import urllib2
 from os.path import dirname, exists, join
 
-GEOHEADER = 'geoheader'
-TIGER_GEOID = 'tiger_geoid'
-CENSUS_PG_MODEL = 'census_pg_model'
 ACS_SPANS = (1, 3, 5)
+GEOHEADER = 'geoheader'
+MODEL = 'model'
+TIGER_GEOID = 'tiger_geoid'
 
 
 def get_states_mapping(value_type):
@@ -73,7 +73,7 @@ def generate_model(metadata, table_groups=None):
 
     url = metadata.bind.url
     schema = metadata.schema
-    model_dir = join(os.getcwd(), CENSUS_PG_MODEL)
+    model_dir = join(os.getcwd(), MODEL)
 
     if not table_groups:
         table_groups = dict()

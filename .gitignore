@@ -1,13 +1,14 @@
 # project files
 *.pyc
-data/
-census_pg_model/
+censuspgsql/data/
+censuspgsql/model/
 
 # pycharm config file
 *.idea/
 
 # buildout files
 .installed.cfg
+*.egg-info
 bin/
 eggs/
 develop-eggs/
