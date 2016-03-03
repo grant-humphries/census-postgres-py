@@ -14,7 +14,7 @@ setup(
     author='Grant Humphries',
     license='GPL',
     keywords='census postgres acs tiger',
-    packages=find_packages(exclude=['censuspgql.model*']),
+    packages=find_packages(exclude=['censuspgsql.model*']),
     install_requires=[
         'fiona>=1.5.1',
         'gdal>=1.11.2',
