@@ -6,7 +6,8 @@ import csv
 import sys
 import subprocess
 import urllib2
-from os.path import dirname, exists, join
+from os.path import basename, exists, join
+from pkg_resources import resource_filename
 
 ACS_SPANS = (1, 3, 5)
 GEOHEADER = 'geoheader'
@@ -26,8 +27,8 @@ def get_states_mapping(value_type):
         exit()
 
     states = dict()
-    states_csv_path = join(dirname(sys.argv[0]), 'census_states.csv')
-    with open(states_csv_path) as states_csv:
+    states_path = resource_filename('censuspgsql', 'data/census_states.csv')
+    with open(states_path) as states_csv:
         reader = csv.DictReader(states_csv)
         for r in reader:
             states[r['Abbreviation']] = r[value_field].replace(' ', '_')
@@ -40,7 +41,7 @@ def download_with_progress(url, dir):
 
     # function adapted from: http://stackoverflow.com/questions/22676
 
-    file_name = url.split('/')[-1]
+    file_name = basename(url)
     file_path = join(dir, file_name)
     u = urllib2.urlopen(url)
     f = open(file_path, 'wb')

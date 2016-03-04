@@ -1,6 +1,6 @@
 # project files
 *.pyc
-censuspgsql/data/
+census_data/
 censuspgsql/model/
 
 # pycharm config file

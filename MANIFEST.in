@@ -1,1 +1,1 @@
-include censuspgsql/census_states.csv
+include censuspgsql/data/census_states.csv
