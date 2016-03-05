@@ -2,8 +2,8 @@ import os
 import re
 import csv
 import sys
-import argparse
 from copy import deepcopy
+from argparse import ArgumentParser
 from zipfile import ZipFile
 from collections import defaultdict
 from os.path import dirname, exists, join
@@ -12,8 +12,8 @@ import xlrd
 from sqlalchemy import create_engine, Column,\
     ForeignKeyConstraint, MetaData, Numeric, Table, Text
 
-import utilities as utils
-from utilities import ACS_SPANS, GEOHEADER, TIGER_GEOID
+import censuspgsql.utilities as utils
+from censuspgsql.utilities import ACS_MOD, ACS_SPANS, GEOHEADER, TIGER_GEOID
 
 ACS_PRIMARY_KEY = {
     'stusab': 'State Postal Abbreviation',
@@ -42,7 +42,7 @@ def download_acs_data():
             os.makedirs(geog_dir)
 
         for st in ops.states:
-            st_name = state_names[st]
+            st_name = ops.state_names[st]
             geog_url = '{base_url}/data/{span}_year_by_state/' \
                        '{state}_{geography}.zip'.format(
                             base_url=acs_url, span=ops.span,
@@ -259,7 +259,7 @@ def create_acs_tables():
 
     # a few values need to be scrubbed in the source data, this
     # dictionary defines those mappings
-    scrub_map = {k.lower(): k for k in state_names.keys()}
+    scrub_map = {k.lower(): k for k in ops.state_names.keys()}
     scrub_map.update({
         '': None,
         '.': 0
@@ -393,52 +393,21 @@ def add_database_comments(table, encoding=None):
 def process_options(arg_list=None):
     """"""
 
-    parser = utils.add_postgres_options(argparse.ArgumentParser())
-    parser.add_argument(
-        '-s', '--states',
-        nargs='+',
-        required=True,
-        choices=sorted(state_names.keys()),
-        help='states for which data is to be include in acs database, '
-             'indicate states with two letter postal codes'
-    )
-    parser.add_argument(
-        '-y', '--year',
-        required=True,
-        type=int,
-        dest='acs_year',
-        help='most recent year of desired ACS data product'
-    )
+    parser = utils.add_census_options(ArgumentParser(), ACS_MOD)
     parser.add_argument(
         '-l', '--span', '--length',
         default=5,
         choices=ACS_SPANS,
         help='number of years that ACS data product covers'
     )
-    parser.add_argument(
-        '-dd', '--data_directory',
-        default=join(os.getcwd(), 'data', 'ACS'),
-        dest='data_dir',
-        help='file path at which downloaded ACS data is to be saved'
-    )
-    parser.add_argument(
-        '-nm', '--no_model',
-        dest='model',
-        action='store_false',
-        help='by default a sqlalchemy model of the schema is created use this'
-             'flag to opt out of that functionality'
-    )
+    parser = utils.add_postgres_options(parser)
 
-    parser.set_defaults(model=True)
     options = parser.parse_args(arg_list)
     return options
 
 
 def main():
     """"""
-
-    global state_names
-    state_names = utils.get_states_mapping('name')
 
     global ops
     args = sys.argv[1:]
@@ -455,7 +424,7 @@ def main():
         schema='acs{yr}_{span}yr'.format(yr=ops.acs_year,
                                          span=ops.span))
 
-    # download_acs_data()
+    download_acs_data()
     drop_create_acs_schema(True)
     create_geoheader()
     create_acs_tables()

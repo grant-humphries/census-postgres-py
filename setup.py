@@ -16,6 +16,7 @@ setup(
     keywords='census postgres acs tiger',
     packages=find_packages(exclude=['censuspgsql.model*']),
     install_requires=[
+        'appdirs>=1.4.0',
         'fiona>=1.5.1',
         'gdal>=1.11.2',
         'geoalchemy2>=0.2.6',

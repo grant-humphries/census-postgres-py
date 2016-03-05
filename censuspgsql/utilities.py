@@ -9,31 +9,38 @@ import urllib2
 from os.path import basename, exists, join
 from pkg_resources import resource_filename
 
+from appdirs import user_cache_dir
+
+ACS_MOD = 'ACS'
 ACS_SPANS = (1, 3, 5)
 GEOHEADER = 'geoheader'
 MODEL = 'model'
 TIGER_GEOID = 'tiger_geoid'
+TIGER_MOD = 'TIGER'
 
 
-def get_states_mapping(value_type):
+def get_states_mapping(module):
     """Maps state abbreviations to their full name or FIPS code"""
 
-    value_dict = {'name': 'State', 'fips': 'FIPS Code'}
-    try:
-        value_field = value_dict[value_type]
-    except KeyError:
-        print 'Invalid value type supplied for states mapping'
-        print 'options are: "name" and "fips"'
+    if module == ACS_MOD:
+        map_key = 'State'
+        key_word = 'state_names'
+    elif module == TIGER_MOD:
+        map_key = 'FIPS Code'
+        key_word = 'state_fips'
+    else:
+        print 'Invalid "module" parameter supplied to get_states_mapping'
+        print 'options are: "{0}" and "{1}"'.format(ACS_MOD, TIGER_MOD)
         exit()
 
     states = dict()
-    states_path = resource_filename('censuspgsql', 'data/census_states.csv')
+    states_path = resource_filename(__package__, 'data/census_states.csv')
     with open(states_path) as states_csv:
         reader = csv.DictReader(states_csv)
         for r in reader:
-            states[r['Abbreviation']] = r[value_field].replace(' ', '_')
+            states[r['Abbreviation']] = r[map_key].replace(' ', '_')
 
-    return states
+    return states, key_word
 
 
 def download_with_progress(url, dir):
@@ -145,5 +152,42 @@ def add_postgres_options(parser):
         default=password,
         help='postgres password for supplied user'
     )
+
+    return parser
+
+
+def add_census_options(parser, module):
+    """"""
+
+    states_mapping, states_kw = get_states_mapping(module)
+
+    parser.add_argument(
+        '-s', '--states',
+        nargs='+',
+        required=True,
+        choices=sorted(states_mapping.keys()),
+        help='states for which {} data is to be include in database, '
+             'indicate states with two letter postal codes'.format(module)
+    )
+    parser.add_argument(
+        '-y', '--year',
+        required=True,
+        type=int,
+        dest='{}_year'.format(module.lower()),
+        help='year of the desired {} data product'.format(module)
+    )
+    parser.add_argument(
+        '-nm', '--no_model',
+        dest='model',
+        action='store_false',
+        help='by default a sqlalchemy model of the produced schema is '
+             'created, use this flag to opt out of that functionality'
+    )
+
+    # data_dir is not user configurable, it is convenient to store it
+    # similar settings that are in the global argparse namespace object
+    data_dir = join(user_cache_dir(__package__), module)
+    parser.set_defaults(data_dir=data_dir, model=True,
+                        **{states_kw: states_mapping})
 
     return parser

@@ -1,9 +1,8 @@
 import os
 import sys
-
-import argparse
 from os.path import exists, join
 from zipfile import ZipFile
+from argparse import ArgumentParser
 
 import fiona
 import sqlalchemy
@@ -13,8 +12,8 @@ from geoalchemy2 import Geometry
 from geoalchemy2.elements import WKTElement
 from shapely.geometry import shape, MultiPolygon
 
-import utilities as utils
-from utilities import ACS_SPANS, GEOHEADER, TIGER_GEOID
+import censuspgsql.utilities as utils
+from censuspgsql.utilities import ACS_SPANS, GEOHEADER, TIGER_GEOID, TIGER_MOD
 
 TIGER_PRODUCT = {
     'b': 'TABBLOCK10',
@@ -45,7 +44,7 @@ def download_tiger_data():
             pd_url = '{base_url}/{pd_class}/' \
                       'tl_{yr}_{fips}_{pd_name}.zip'.format(
                            base_url=tiger_url, pd_class=pd_class,
-                           yr=ops.tiger_year, fips=state_fips[st],
+                           yr=ops.tiger_year, fips=ops.state_fips[st],
                            pd_name=pd_name)
 
             pd_path = utils.download_with_progress(pd_url, pd_dir)
@@ -81,7 +80,7 @@ def load_tiger_data():
 
         for st in ops.states:
             shp_name = 'tl_{yr}_{fips}_{pd_name}.shp'.format(
-                yr=ops.tiger_year, fips=state_fips[st],
+                yr=ops.tiger_year, fips=ops.state_fips[st],
                 pd_name=pd_name)
             pd_shp = join(pd_dir, shp_name)
 
@@ -198,28 +197,7 @@ def process_options(arglist=None):
     """Define options that users can pass through the command line, in this
     case these are all postgres database parameters"""
 
-    parser = utils.add_postgres_options(argparse.ArgumentParser())
-    parser.add_argument(
-        '-s', '--states',
-        nargs='+',
-        required=True,
-        choices=sorted(state_fips.keys()),
-        help='states for which TIGER data is to be include in database, '
-             'indicate states with two letter postal codes'
-    )
-    parser.add_argument(
-        '-y', '--year',
-        required=True,
-        type=int,
-        dest='tiger_year',
-        help='year of the desired TIGER data product'
-    )
-    parser.add_argument(
-        '-dd', '--data_directory',
-        default=join(os.getcwd(), 'data', 'TIGER'),
-        dest='data_dir',
-        help='file path at which downloaded TIGER data is to be saved'
-    )
+    parser = utils.add_census_options(ArgumentParser(), TIGER_MOD)
     parser.add_argument(
         '-dp', '--data_product',
         nargs='+',
@@ -236,24 +214,15 @@ def process_options(arglist=None):
         help='by default a foreign key to the ACS data is created if that'
              'data exists, use this flag to disable that constraint'
     )
-    parser.add_argument(
-        '-nm', '--no_model',
-        dest='model',
-        action='store_false',
-        help='by default a sqlalchemy model of the schema is created use this'
-             'flag to opt out of that functionality'
-    )
+    parser = utils.add_postgres_options(parser)
 
-    parser.set_defaults(foreign_key=True, model=True)
+    parser.set_defaults(foreign_key=True)
     options = parser.parse_args(arglist)
     return options
 
 
 def main():
     """>> python postgis_tiger.py -y 2015 -s OR WA"""
-
-    global state_fips
-    state_fips = utils.get_states_mapping('fips')
 
     global ops
     args = sys.argv[1:]
@@ -278,7 +247,7 @@ def main():
             except sqlalchemy.exc.InvalidRequestError:
                 pass
 
-    # download_tiger_data()
+    download_tiger_data()
     create_tiger_schema(True)
     load_tiger_data()
     if ops.model:
