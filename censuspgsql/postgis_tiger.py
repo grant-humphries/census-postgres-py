@@ -250,6 +250,7 @@ def main():
     download_tiger_data()
     create_tiger_schema(True)
     load_tiger_data()
+
     if ops.model:
         utils.generate_model(ops.metadata)
 

@@ -6,7 +6,7 @@ import csv
 import sys
 import subprocess
 import urllib2
-from os.path import basename, exists, join
+from os.path import abspath, basename, exists, join
 from pkg_resources import resource_filename
 
 from appdirs import user_cache_dir
@@ -81,7 +81,7 @@ def generate_model(metadata, table_groups=None):
 
     url = metadata.bind.url
     schema = metadata.schema
-    model_dir = join(os.getcwd(), MODEL)
+    model_dir = join(abspath(__package__), MODEL)
 
     if not table_groups:
         table_groups = dict()

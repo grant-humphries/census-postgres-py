@@ -5,7 +5,7 @@ import sys
 from copy import deepcopy
 from argparse import ArgumentParser
 from zipfile import ZipFile
-from collections import defaultdict
+from collections import defaultdict, OrderedDict
 from os.path import dirname, exists, join
 
 import xlrd
@@ -15,10 +15,10 @@ from sqlalchemy import create_engine, Column,\
 import censuspgsql.utilities as utils
 from censuspgsql.utilities import ACS_MOD, ACS_SPANS, GEOHEADER, TIGER_GEOID
 
-ACS_PRIMARY_KEY = {
-    'stusab': 'State Postal Abbreviation',
-    'logrecno': 'Logical Record Number'
-}
+ACS_PRIMARY_KEY = OrderedDict([
+    ('stusab', 'State Postal Abbreviation'),
+    ('logrecno', 'Logical Record Number')
+])
 
 # geography groupings offered by the Census Bureau
 ACS_GEOGRAPHY = [
@@ -29,6 +29,9 @@ ACS_GEOGRAPHY = [
 
 def download_acs_data():
     """"""
+
+    print 'data will be downloaded to the following directory:'
+    print ops.data_dir
 
     # get raw census data in text delimited form, the data has been
     # grouped into what the Census Bureau calls 'sequences'
@@ -82,7 +85,7 @@ def drop_create_acs_schema(drop_existing=False):
         print 'dropping schema {}...'.format(schema)
 
         # drop in tables in chunks so max number of locks isn't exceeded,
-        # geoheader need to be dropped last since it is a foreign key to
+        # geoheader needs to be dropped last since it has a foreign key to
         # all other tables
         tbl_query = engine.execute(
             "SELECT tablename FROM pg_tables "
@@ -307,10 +310,6 @@ def create_acs_tables():
             table.create()
             add_database_comments(table, 'cp1252')
 
-
-            continue
-
-
             # create a list of the indices that for the columns that will
             # be extracted from the defined sequence for the current table
             columns = [stusab_ix, logrec_ix]
@@ -406,6 +405,27 @@ def process_options(arg_list=None):
     return options
 
 
+def generate_table_groups():
+    """Tables are grouped if there first six letters are the same, this
+    reduces the number of files that have to generated for the sqlalchemy
+    model and thus speeds that creation process"""
+
+    # if the table models aren't in memory reflect them
+    if not ops.metadata.tables:
+        ops.metadata.reflect(schema=ops.metadata.schema)
+
+    table_groups = defaultdict(list)
+    for schema_table in ops.metadata.tables:
+        table = schema_table.split('.')[1]
+        if table != GEOHEADER:
+            key = table[:6]
+        else:
+            key = table
+        table_groups[key].append(table)
+
+    return table_groups
+
+
 def main():
     """"""
 
@@ -424,21 +444,13 @@ def main():
         schema='acs{yr}_{span}yr'.format(yr=ops.acs_year,
                                          span=ops.span))
 
-    download_acs_data()
-    drop_create_acs_schema(True)
-    create_geoheader()
-    create_acs_tables()
+    # download_acs_data()
+    # drop_create_acs_schema(True)
+    # create_geoheader()
+    # create_acs_tables()
 
     if ops.model:
-        table_groups = defaultdict(list)
-        for schema_table in ops.metadata.tables:
-            table = schema_table.split('.')[1]
-            if table != GEOHEADER:
-                key = table[:6]
-            else:
-                key = table
-            table_groups[key].append(table)
-        utils.generate_model(ops.metadata, table_groups)
+        utils.generate_model(ops.metadata, generate_table_groups())
 
 
 if __name__ == '__main__':
