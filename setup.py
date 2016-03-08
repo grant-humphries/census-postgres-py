@@ -30,7 +30,8 @@ setup(
     entry_points={
         'console_scripts': [
             'postgres_acs = censuspgsql.postgres_acs:main',
-            'postgis_tiger = censuspgsql.postgis_tiger:main'
+            'postgis_tiger = censuspgsql.postgis_tiger:main',
+            'sqlacodegen = sqlacodegen.main:main'
         ]
     }
 )
