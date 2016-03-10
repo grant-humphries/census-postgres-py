@@ -1,21 +1,22 @@
-# Utilities that are used by multiple scripts in the census-postgres-py
-# project
+# Utilities that are used by multiple scripts in the censuspgsql package
 
-import os
 import csv
-import sys
+import os
 import subprocess
+import sys
 import urllib2
-from os.path import abspath, basename, exists, join
+from collections import defaultdict
 from pkg_resources import resource_filename
+from os.path import abspath, basename, exists, join
 
 from appdirs import user_cache_dir
 
 ACS_MOD = 'ACS'
 ACS_SPANS = (1, 3, 5)
 GEOHEADER = 'geoheader'
+GEOID = 'geoid'
 MODEL = 'model'
-TIGER_GEOID = 'tiger_geoid'
+TIGER_GEOID = 'tiger_{}'.format(GEOID)
 TIGER_MOD = 'TIGER'
 
 
@@ -53,8 +54,10 @@ def download_with_progress(url, dir):
     u = urllib2.urlopen(url)
     f = open(file_path, 'wb')
     meta = u.info()
-    file_size = int(meta.getheaders("Content-Length")[0])
-    print "Downloading: %s Bytes: %s" % (file_name, file_size)
+    file_size = int(meta.getheaders('Content-Length')[0])
+    print '\ndownload directory: {}'.format(dir)
+    print 'download file name: {} '.format(file_name)
+    print 'download size: {:,} bytes'.format(file_size)
 
     file_size_dl = 0
     block_sz = 8192
@@ -66,8 +69,8 @@ def download_with_progress(url, dir):
         file_size_dl += len(buffer_)
         f.write(buffer_)
 
-        status = '{0:10d}  [{2:3.2f}%]'.format(
-            file_size_dl, file_size, file_size_dl * 100. / file_size)
+        status = '{0:12,d}  [{1:3.2f}%]'.format(
+            file_size_dl, file_size_dl * 100. / file_size)
         status += chr(8) * (len(status) + 1)
         print status,
 
@@ -76,18 +79,29 @@ def download_with_progress(url, dir):
     return file_path
 
 
-def generate_model(metadata, table_groups=None):
+def generate_model(metadata, tbl_mapping=None, tbl_exclude=list()):
     """"""
 
     url = metadata.bind.url
     schema = metadata.schema
     model_dir = join(abspath(__package__), MODEL)
 
-    if not table_groups:
-        table_groups = dict()
-        for schema_table in metadata.tables:
-            table = schema_table.split('.')[1]
-            table_groups[table] = [table]
+    # if the table models aren't in memory reflect them for the
+    # assigned schema
+    if not metadata.tables:
+        metadata.reflect(schema=schema)
+
+    tbl_groups = defaultdict(list)
+    for tbl_path in metadata.tables:
+        tbl_schema, table = tbl_path.split('.')
+
+        # only model tables in the schema assigned to the metadata object
+        if tbl_schema == schema and table not in tbl_exclude:
+            if tbl_mapping:
+                tbl_key = tbl_mapping[table]
+            else:
+                tbl_key = table
+            tbl_groups[tbl_key].append(table)
 
     if not exists(model_dir):
         os.makedirs(model_dir)
@@ -106,11 +120,12 @@ def generate_model(metadata, table_groups=None):
     print 'table groups written:'
 
     i = 0
-    for table_key, table_list in table_groups.items():
-        table_str = ','.join(sorted(table_list))
-        model_file = join(schema_dir, '{}.py'.format(table_key))
+    for tbl_key, tbl_list in tbl_groups.items():
+        tbl_str = ','.join(sorted(tbl_list))
+        model_file = join(schema_dir, '{}.py'.format(tbl_key))
         codegen = codegen_template.format(
-            schema, table_str, model_file, url=url)
+            schema, tbl_str, model_file, url=url)
+
         subprocess.call(codegen)
 
         # logging for user

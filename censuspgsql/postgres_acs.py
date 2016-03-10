@@ -1,19 +1,20 @@
+import csv
 import os
 import re
-import csv
 import sys
-from copy import deepcopy
 from argparse import ArgumentParser
-from zipfile import ZipFile
 from collections import defaultdict, OrderedDict
+from copy import deepcopy
 from os.path import dirname, exists, join
+from zipfile import ZipFile
 
 import xlrd
 from sqlalchemy import create_engine, Column,\
     ForeignKeyConstraint, MetaData, Numeric, Table, Text
 
 import censuspgsql.utilities as utils
-from censuspgsql.utilities import ACS_MOD, ACS_SPANS, GEOHEADER, TIGER_GEOID
+from censuspgsql.utilities import ACS_MOD, ACS_SPANS, \
+    GEOHEADER, GEOID, TIGER_GEOID
 
 ACS_PRIMARY_KEY = OrderedDict([
     ('stusab', 'State Postal Abbreviation'),
@@ -29,9 +30,6 @@ ACS_GEOGRAPHY = [
 
 def download_acs_data():
     """"""
-
-    print 'data will be downloaded to the following directory:'
-    print ops.data_dir
 
     # get raw census data in text delimited form, the data has been
     # grouped into what the Census Bureau calls 'sequences'
@@ -168,7 +166,7 @@ def create_geoheader():
 
     # prep to populate tiger geoid column
     field_names = [c.name for c in columns]
-    geoid_ix = field_names.index('geoid')
+    geoid_ix = field_names.index(GEOID)
     component_ix = field_names.index('component')
     sumlevel_ix = field_names.index('sumlevel')
     tiger_ix = field_names.index(TIGER_GEOID)
@@ -405,25 +403,18 @@ def process_options(arg_list=None):
     return options
 
 
-def generate_table_groups():
+def make_table_mapping():
     """Tables are grouped if there first six letters are the same, this
     reduces the number of files that have to generated for the sqlalchemy
     model and thus speeds that creation process"""
 
-    # if the table models aren't in memory reflect them
-    if not ops.metadata.tables:
-        ops.metadata.reflect(schema=ops.metadata.schema)
-
-    table_groups = defaultdict(list)
+    tbl_mapping = dict()
     for schema_table in ops.metadata.tables:
         table = schema_table.split('.')[1]
-        if table != GEOHEADER:
-            key = table[:6]
-        else:
-            key = table
-        table_groups[key].append(table)
+        model = table[:6]
+        tbl_mapping[table] = model
 
-    return table_groups
+    return tbl_mapping
 
 
 def main():
@@ -444,13 +435,13 @@ def main():
         schema='acs{yr}_{span}yr'.format(yr=ops.acs_year,
                                          span=ops.span))
 
-    # download_acs_data()
-    # drop_create_acs_schema(True)
-    # create_geoheader()
-    # create_acs_tables()
+    download_acs_data()
+    drop_create_acs_schema(True)
+    create_geoheader()
+    create_acs_tables()
 
     if ops.model:
-        utils.generate_model(ops.metadata, generate_table_groups())
+        utils.generate_model(ops.metadata, make_table_mapping(), [GEOHEADER])
 
 
 if __name__ == '__main__':

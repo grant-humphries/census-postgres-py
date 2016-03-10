@@ -1,29 +1,27 @@
 import os
 import sys
+from argparse import ArgumentParser
 from os.path import exists, join
 from zipfile import ZipFile
-from argparse import ArgumentParser
 
 import fiona
 import sqlalchemy
-from sqlalchemy import create_engine, MetaData, \
-    Table, Column, ForeignKeyConstraint, Float, Integer, Text
 from geoalchemy2 import Geometry
 from geoalchemy2.elements import WKTElement
 from shapely.geometry import shape, MultiPolygon
+from sqlalchemy import create_engine, MetaData, \
+    Table, Column, ForeignKeyConstraint, Float, Integer, Text
 
 import censuspgsql.utilities as utils
-from censuspgsql.utilities import ACS_SPANS, GEOHEADER, TIGER_GEOID, TIGER_MOD
+from censuspgsql.utilities import ACS_SPANS, GEOHEADER, \
+    GEOID, TIGER_GEOID, TIGER_MOD
 
+TIGER_PK = GEOID
 TIGER_PRODUCT = {
     'b': 'TABBLOCK10',
     'bg': 'BG',
     't': 'TRACT'
 }
-TIGER_PRIMARY_KEY = [
-    'GEOID',
-    'GEOID10'
-]
 
 
 def download_tiger_data():
@@ -72,6 +70,18 @@ def create_tiger_schema(drop_existing=False):
 
 def load_tiger_data():
     """"""
+
+    # if the foreign key flag is set to true reflect geoheader tables
+    # in matching acs schemas, tiger data is matched to acs that is one
+    # year less recent because it is released one year sooner
+    if ops.foreign_key:
+        acs_year = ops.tiger_year - 1
+        for i in ACS_SPANS:
+            acs_schema = 'acs{yr}_{span}yr'.format(yr=acs_year, span=i)
+            try:
+                ops.metadata.reflect(schema=acs_schema, only=[GEOHEADER])
+            except sqlalchemy.exc.InvalidRequestError:
+                pass
 
     for pd in ops.product:
         pd_name = TIGER_PRODUCT[pd].lower()
@@ -125,7 +135,7 @@ def load_tiger_data():
 
 
 def create_tiger_table(shp_metadata, product, drop_existing=False):
-    """metadata parameter must be a fiona metadata object"""
+    """shp_metadata parameter must be a fiona metadata object"""
 
     # handle cases where the table already exists
     schema = ops.metadata.schema
@@ -168,17 +178,20 @@ def create_tiger_table(shp_metadata, product, drop_existing=False):
             name=col_name,
             type_=fiona2db[f_type.split(':')[0]])
 
-        if f_name in TIGER_PRIMARY_KEY:
+        # blocks have a primary key of 'GEOID10' while all others have
+        # 'GEOID' as a pk, thus the slicing
+        if f_name[:5] == TIGER_PK.upper():
             attr_col.primary_key = True
             pk_col = col_name
 
         columns.append(attr_col)
 
     # add a foreign key to the ACS data unless options indicate not to, blocks
-    # (pk of 'GEOID10') aren't in the ACS so can't have the constraint
-    if ops.foreign_key and pk_col == TIGER_PRIMARY_KEY[0]:
+    # (pk of 'geoid10') aren't in the ACS so can't have the constraint
+    if ops.foreign_key and pk_col == TIGER_PK:
         meta_tables = ops.metadata.tables
         geoheaders = [meta_tables[t] for t in meta_tables if GEOHEADER in t]
+
         for gh in geoheaders:
             foreign_col = gh.columns[TIGER_GEOID]
             fk = ForeignKeyConstraint([pk_col], [foreign_col])
@@ -236,18 +249,7 @@ def main():
         bind=ops.engine,
         schema='tiger{yr}'.format(yr=ops.tiger_year))
 
-    if ops.foreign_key:
-        # tiger data is generally 1 year more recent that the acs, thus
-        # they're being pair as such here
-        acs_year = ops.tiger_year - 1
-        for i in ACS_SPANS:
-            acs_schema = 'acs{yr}_{span}yr'.format(yr=acs_year, span=i)
-            try:
-                ops.metadata.reflect(schema=acs_schema, only=[GEOHEADER])
-            except sqlalchemy.exc.InvalidRequestError:
-                pass
-
-    download_tiger_data()
+    # download_tiger_data()
     create_tiger_schema(True)
     load_tiger_data()
 
