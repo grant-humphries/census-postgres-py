@@ -21,6 +21,7 @@ setup(
         'gdal>=1.11.2',
         'geoalchemy2>=0.2.6',
         'psycopg2>=2.6.1',
+        'pyproj>=1.9.5.1',
         'shapely>=1.5.13',
         'sqlacodegen>=1.1.6',
         'sqlalchemy>=1.0.11',

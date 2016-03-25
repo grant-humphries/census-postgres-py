@@ -194,6 +194,7 @@ def add_census_options(parser, module):
     )
     parser.add_argument(
         '-nm', '--no_model',
+        default=True,
         dest='model',
         action='store_false',
         help='by default a sqlalchemy model of the produced schema is '
@@ -203,7 +204,6 @@ def add_census_options(parser, module):
     # data_dir is not user configurable, it is convenient to store it
     # similar settings that are in the global argparse namespace object
     data_dir = join(user_cache_dir(__package__), module)
-    parser.set_defaults(data_dir=data_dir, model=True,
-                        **{states_kw: states_mapping})
+    parser.set_defaults(data_dir=data_dir, **{states_kw: states_mapping})
 
     return parser

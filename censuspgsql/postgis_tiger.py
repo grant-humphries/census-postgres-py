@@ -1,13 +1,16 @@
 import os
 import sys
 from argparse import ArgumentParser
+from functools import partial
 from os.path import exists, join
 from zipfile import ZipFile
 
 import fiona
+import pyproj
 import sqlalchemy
 from geoalchemy2 import Geometry
 from geoalchemy2.elements import WKTElement
+from shapely import ops
 from shapely.geometry import shape, MultiPolygon
 from sqlalchemy import create_engine, MetaData, \
     Table, Column, ForeignKeyConstraint, Float, Integer, Text
@@ -28,21 +31,21 @@ def download_tiger_data():
     """"""
 
     tiger_url = 'ftp://ftp2.census.gov/geo/tiger/TIGER{yr}'.format(
-        yr=ops.tiger_year)
+        yr=go.tiger_year)
 
-    for pd in ops.product:
+    for pd in go.product:
         pd_name = TIGER_PRODUCT[pd].lower()
         pd_class = ''.join([c for c in TIGER_PRODUCT[pd] if c.isalpha()])
-        pd_dir = join(ops.data_dir, pd_class)
+        pd_dir = join(go.data_dir, pd_class)
 
         if not exists(pd_dir):
             os.makedirs(pd_dir)
 
-        for st in ops.states:
+        for st in go.states:
             pd_url = '{base_url}/{pd_class}/' \
                       'tl_{yr}_{fips}_{pd_name}.zip'.format(
                            base_url=tiger_url, pd_class=pd_class,
-                           yr=ops.tiger_year, fips=ops.state_fips[st],
+                           yr=go.tiger_year, fips=go.state_fips[st],
                            pd_name=pd_name)
 
             pd_path = utils.download_with_progress(pd_url, pd_dir)
@@ -54,14 +57,14 @@ def download_tiger_data():
 def create_tiger_schema(drop_existing=False):
     """"""
 
-    engine = ops.engine
-    schema = ops.metadata.schema
+    engine = go.engine
+    schema = go.metadata.schema
 
     if drop_existing:
         engine.execute("DROP SCHEMA IF EXISTS {} CASCADE;".format(schema))
 
     try:
-        ops.engine.execute("CREATE SCHEMA {};".format(schema))
+        go.engine.execute("CREATE SCHEMA {};".format(schema))
     except sqlalchemy.exc.ProgrammingError as e:
         print e.message
         print 'Data will be loaded into the existing schema,'
@@ -71,26 +74,34 @@ def create_tiger_schema(drop_existing=False):
 def load_tiger_data():
     """"""
 
+    if go.epsg:
+        transformation = partial(
+            pyproj.transform,
+            pyproj.Proj(init='epsg:{}'.format(src_srs)),
+            pyproj.Proj(init='epsg:{}'.format(go.epsg), preserve_units=True)
+        )
+
+
     # if the foreign key flag is set to true reflect geoheader tables
     # in matching acs schemas, tiger data is matched to acs that is one
     # year less recent because it is released one year sooner
-    if ops.foreign_key:
-        acs_year = ops.tiger_year - 1
+    if go.foreign_key:
+        acs_year = go.tiger_year - 1
         for i in ACS_SPANS:
             acs_schema = 'acs{yr}_{span}yr'.format(yr=acs_year, span=i)
             try:
-                ops.metadata.reflect(schema=acs_schema, only=[GEOHEADER])
+                go.metadata.reflect(schema=acs_schema, only=[GEOHEADER])
             except sqlalchemy.exc.InvalidRequestError:
                 pass
 
-    for pd in ops.product:
+    for pd in go.product:
         pd_name = TIGER_PRODUCT[pd].lower()
         pd_class = ''.join([c for c in TIGER_PRODUCT[pd] if c.isalpha()])
-        pd_dir = join(ops.data_dir, pd_class)
+        pd_dir = join(go.data_dir, pd_class)
 
-        for st in ops.states:
+        for st in go.states:
             shp_name = 'tl_{yr}_{fips}_{pd_name}.shp'.format(
-                yr=ops.tiger_year, fips=ops.state_fips[st],
+                yr=go.tiger_year, fips=go.state_fips[st],
                 pd_name=pd_name)
             pd_shp = join(pd_dir, shp_name)
 
@@ -101,7 +112,7 @@ def load_tiger_data():
 
                 print '\nloading shapefile "{0}" ' \
                       'into table: "{1}.{2}":'.format(
-                           shp_name, ops.metadata.schema, table.name)
+                           shp_name, go.metadata.schema, table.name)
                 print 'features inserted:'
 
                 memory_tbl = list()
@@ -114,6 +125,9 @@ def load_tiger_data():
                     # are multi's and the geometry types must match
                     shapely_geom = MultiPolygon([shape(feat['geometry'])])
 
+                    if go.transform:
+                        shapely_geom = ops.transform(transformation, shapely_geom)
+
                     # geoalchemy2 requires that geometry be in EWKT format
                     # for inserts, that conversion is made below
                     ga2_geom = WKTElement(shapely_geom.wkt, epsg)
@@ -122,7 +136,7 @@ def load_tiger_data():
 
                     count = fid + 1
                     if count % 1000 == 0 or fid == max_fid:
-                        ops.engine.execute(table.insert(), memory_tbl)
+                        go.engine.execute(table.insert(), memory_tbl)
                         memory_tbl = list()
 
                         # logging to inform the user
@@ -138,17 +152,17 @@ def create_tiger_table(shp_metadata, product, drop_existing=False):
     """shp_metadata parameter must be a fiona metadata object"""
 
     # handle cases where the table already exists
-    schema = ops.metadata.schema
+    schema = go.metadata.schema
     table_name = TIGER_PRODUCT[product].lower()
     if not drop_existing:
-        engine = ops.engine
+        engine = go.engine
         if engine.dialect.has_table(engine.connect(), table_name, schema):
             full_name = '{0}.{1}'.format(schema, table_name)
             print 'Table {} already exists, ' \
                   'using existing table...'.format(full_name)
             print 'to recreate the table use the "drop_existing" flag'
 
-            return ops.metadata.tables[full_name]
+            return go.metadata.tables[full_name]
 
     fiona2db = {
         'int': Integer,
@@ -188,8 +202,8 @@ def create_tiger_table(shp_metadata, product, drop_existing=False):
 
     # add a foreign key to the ACS data unless options indicate not to, blocks
     # (pk of 'geoid10') aren't in the ACS so can't have the constraint
-    if ops.foreign_key and pk_col == TIGER_PK:
-        meta_tables = ops.metadata.tables
+    if go.foreign_key and pk_col == TIGER_PK:
+        meta_tables = go.metadata.tables
         geoheaders = [meta_tables[t] for t in meta_tables if GEOHEADER in t]
 
         for gh in geoheaders:
@@ -199,11 +213,28 @@ def create_tiger_table(shp_metadata, product, drop_existing=False):
 
     table = Table(
         table_name,
-        ops.metadata,
+        go.metadata,
         *columns)
     table.create()
 
     return table
+
+
+def transform_geometry():
+    """"""
+
+
+
+def create_transformation(src_srs, dst_srs):
+    """"""
+
+    transformation = partial(
+        pyproj.transform,
+        pyproj.Proj(init='epsg:{}'.format(src_srs)),
+        pyproj.Proj(init='epsg:{}'.format(dst_srs), preserve_units=True)
+    )
+
+    return transformation
 
 
 def process_options(arglist=None):
@@ -221,7 +252,17 @@ def process_options(arglist=None):
              '"b": blocks, "bg": block groups, "t": tracts'
     )
     parser.add_argument(
+        '-t', '--transform',
+        default=None,
+        type=int,
+        dest='epsg',
+        help='TIGER data comes from the census bureau in the projection'
+             '4269, pass an EPSG code to this parameter to transform'
+             'the geometry to another spatial reference system'
+    )
+    parser.add_argument(
         '-nfk', '--no_foreign_key',
+        default=True,
         dest='foreign_key',
         action='store_false',
         help='by default a foreign key to the ACS data is created if that'
@@ -229,7 +270,7 @@ def process_options(arglist=None):
     )
     parser = utils.add_postgres_options(parser)
 
-    parser.set_defaults(foreign_key=True)
+    parser.set_defaults()
     options = parser.parse_args(arglist)
     return options
 
@@ -237,24 +278,27 @@ def process_options(arglist=None):
 def main():
     """>> python postgis_tiger.py -y 2015 -s OR WA"""
 
-    global ops
+    global go  # global options (go)
     args = sys.argv[1:]
-    ops = process_options(args)
+    go = process_options(args)
 
     pg_url = 'postgres://{user}:{pw}@{host}/{db}'.format(
-        user=ops.user, pw=ops.password, host=ops.host, db=ops.dbname)
+        user=go.user, pw=go.password, host=go.host, db=go.dbname)
 
-    ops.engine = create_engine(pg_url)
-    ops.metadata = MetaData(
-        bind=ops.engine,
-        schema='tiger{yr}'.format(yr=ops.tiger_year))
+    go.engine = create_engine(pg_url)
+    go.metadata = MetaData(
+        bind=go.engine,
+        schema='tiger{yr}'.format(yr=go.tiger_year))
 
-    # download_tiger_data()
+    if go.tranform:
+
+
+    download_tiger_data()
     create_tiger_schema(True)
     load_tiger_data()
 
-    if ops.model:
-        utils.generate_model(ops.metadata)
+    if go.model:
+        utils.generate_model(go.metadata)
 
 
 if __name__ == '__main__':
