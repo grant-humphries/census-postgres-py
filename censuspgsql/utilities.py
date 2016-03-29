@@ -114,7 +114,7 @@ def generate_model(metadata, tbl_mapping=None, tbl_exclude=list()):
         os.makedirs(schema_dir)
         open(join(schema_dir, '__init__.py'), 'w').close()
 
-    codegen_template = './bin/sqlacodegen ' \
+    codegen_template = './bin/sqlacodegen --nojoined ' \
                        '--schema {0} --tables {1} ' \
                        '--outfile {2} {url}'
 
