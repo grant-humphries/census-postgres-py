@@ -12,10 +12,12 @@ from os.path import abspath, basename, exists, join
 from appdirs import user_cache_dir
 
 ACS_MOD = 'ACS'
+ACS_SCHEMA = 'acs{yr}_{span}yr'
 ACS_SPANS = (1, 3, 5)
 GEOHEADER = 'geoheader'
 GEOID = 'geoid'
 MODEL = 'model'
+PG_URL = 'postgres://{user}:{pw}@{host}/{db}'
 TIGER_GEOID = 'tiger_{}'.format(GEOID)
 TIGER_MOD = 'TIGER'
 

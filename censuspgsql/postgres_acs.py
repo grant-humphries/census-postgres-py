@@ -3,7 +3,7 @@ import os
 import re
 import sys
 from argparse import ArgumentParser
-from collections import defaultdict, OrderedDict
+from collections import OrderedDict
 from copy import deepcopy
 from os.path import dirname, exists, join
 from zipfile import ZipFile
@@ -13,8 +13,8 @@ from sqlalchemy import create_engine, Column,\
     ForeignKeyConstraint, MetaData, Numeric, Table, Text
 
 import censuspgsql.utilities as utils
-from censuspgsql.utilities import ACS_MOD, ACS_SPANS, \
-    GEOHEADER, GEOID, TIGER_GEOID
+from censuspgsql.utilities import ACS_MOD, ACS_SCHEMA, ACS_SPANS, \
+    GEOHEADER, GEOID, PG_URL, TIGER_GEOID
 
 ACS_PRIMARY_KEY = OrderedDict([
     ('stusab', 'State Postal Abbreviation'),
@@ -34,19 +34,19 @@ def download_acs_data():
     # get raw census data in text delimited form, the data has been
     # grouped into what the Census Bureau calls 'sequences'
     acs_url = 'http://www2.census.gov/programs-surveys/' \
-              'acs/summary_file/{yr}'.format(yr=ops.acs_year)
+              'acs/summary_file/{yr}'.format(yr=gv.acs_year)
 
     for geog in ACS_GEOGRAPHY:
-        geog_dir = join(ops.data_dir, geog.lower())
+        geog_dir = join(gv.data_dir, geog.lower())
 
         if not exists(geog_dir):
             os.makedirs(geog_dir)
 
-        for st in ops.states:
-            st_name = ops.state_names[st]
+        for st in gv.states:
+            st_name = gv.state_names[st]
             geog_url = '{base_url}/data/{span}_year_by_state/' \
                        '{state}_{geography}.zip'.format(
-                            base_url=acs_url, span=ops.span,
+                            base_url=acs_url, span=gv.span,
                             state=st_name, geography=geog)
 
             geog_path = utils.download_with_progress(geog_url, geog_dir)
@@ -59,9 +59,9 @@ def download_acs_data():
     # will be used by this process)
     schema_url = '{base_url}/data/{yr}_{span}yr_' \
                  'Summary_FileTemplates.zip'.format(
-                      base_url=acs_url, yr=ops.acs_year, span=ops.span)
+                      base_url=acs_url, yr=gv.acs_year, span=gv.span)
 
-    schema_path = utils.download_with_progress(schema_url, ops.data_dir)
+    schema_path = utils.download_with_progress(schema_url, gv.data_dir)
     with ZipFile(schema_path, 'r') as z:
         print '\nunzipping...'
         z.extractall(dirname(schema_path))
@@ -69,15 +69,15 @@ def download_acs_data():
     # download the lookup table that contains information as to how to
     # extract the ACS tables from the sequences
     lookup_url = '{base_url}/documentation/user_tools/' \
-                 '{lookup}'.format(base_url=acs_url, lookup=ops.lookup_file)
-    utils.download_with_progress(lookup_url, ops.data_dir)
+                 '{lookup}'.format(base_url=acs_url, lookup=gv.lookup_file)
+    utils.download_with_progress(lookup_url, gv.data_dir)
 
 
 def drop_create_acs_schema(drop_existing=False):
     """"""
 
-    engine = ops.engine
-    schema = ops.metadata.schema
+    engine = gv.engine
+    schema = gv.metadata.schema
 
     if drop_existing:
         print 'dropping schema {}...'.format(schema)
@@ -111,8 +111,8 @@ def drop_create_acs_schema(drop_existing=False):
 def create_geoheader():
     """"""
 
-    geo_xls = '{yr}_SFGeoFileTemplate.xls'.format(yr=ops.acs_year)
-    geo_schema = join(ops.data_dir, geo_xls)
+    geo_xls = '{yr}_SFGeoFileTemplate.xls'.format(yr=gv.acs_year)
+    geo_schema = join(gv.data_dir, geo_xls)
     book = xlrd.open_workbook(geo_schema)
     sheet = book.sheet_by_index(0)
 
@@ -156,7 +156,7 @@ def create_geoheader():
     tbl_comment = 'Intermediary table used to join ACS and TIGER data'
     table = Table(
         tbl_name,
-        ops.metadata,
+        gv.metadata,
         *columns,
         info=tbl_comment)
 
@@ -184,10 +184,10 @@ def create_geoheader():
     # http://www2.census.gov/programs-surveys/acs/summary_file/2014/
     # documentation/tech_docs/ACS_2014_SF_5YR_Appendices.xls
 
-    geog_dir = join(ops.data_dir, ACS_GEOGRAPHY[0].lower())
-    for st in ops.states:
+    geog_dir = join(gv.data_dir, ACS_GEOGRAPHY[0].lower())
+    for st in gv.states:
         geo_csv = 'g{yr}{span}{state}.csv'.format(
-            yr=ops.acs_year, span=ops.span, state=st.lower()
+            yr=gv.acs_year, span=gv.span, state=st.lower()
         )
         with open(join(geog_dir, geo_csv)) as geo_data:
             reader = csv.reader(geo_data)
@@ -212,7 +212,7 @@ def create_acs_tables():
     """"""
 
     acs_tables = dict()
-    lookup_path = join(ops.data_dir, ops.lookup_file)
+    lookup_path = join(gv.data_dir, gv.lookup_file)
 
     # this csv is encoded as cp1252 (aka windows-1252) this some of the
     # strings contain characters that need to be decoded as such
@@ -260,7 +260,7 @@ def create_acs_tables():
 
     # a few values need to be scrubbed in the source data, this
     # dictionary defines those mappings
-    scrub_map = {k.lower(): k for k in ops.state_names.keys()}
+    scrub_map = {k.lower(): k for k in gv.state_names.keys()}
     scrub_map.update({
         '': None,
         '.': 0
@@ -302,7 +302,7 @@ def create_acs_tables():
 
             table = Table(
                 mtv['name'],
-                ops.metadata,
+                gv.metadata,
                 *mtv['columns'],
                 info=mtv['comment'])
             table.create()
@@ -316,13 +316,13 @@ def create_acs_tables():
             )
 
             memory_tbl = list()
-            for st in ops.states:
+            for st in gv.states:
                 seq_name = '{type}{yr}{span}{state}{seq}000.txt'.format(
-                    type=tv['file_char'], yr=ops.acs_year, span=ops.span,
+                    type=tv['file_char'], yr=gv.acs_year, span=gv.span,
                     state=st.lower(), seq=mtv['sequence'])
 
                 for geog in ACS_GEOGRAPHY:
-                    seq_path = join(ops.data_dir, geog, seq_name)
+                    seq_path = join(gv.data_dir, geog, seq_name)
                     with open(seq_path) as seq:
                         reader = csv.reader(seq)
                         for row in reader:
@@ -344,7 +344,7 @@ def create_acs_tables():
             # is faster than alternative methods see details here:
             # http://docs.sqlalchemy.org/en/rel_0_8/faq.html#
             # i-m-inserting-400-000-rows-with-the-orm-and-it-s-really-slow
-            ops.engine.execute(table.insert(), memory_tbl)
+            gv.engine.execute(table.insert(), memory_tbl)
 
             # logging for user to keep track of progress
             tbl_count += 1
@@ -359,8 +359,8 @@ def add_database_comments(table, encoding=None):
     meaning of each table and column in the ACS can be difficult to
     ascertain and this should help to clarify"""
 
-    schema = ops.metadata.schema
-    with ops.engine.begin() as connection:
+    schema = gv.metadata.schema
+    with gv.engine.begin() as connection:
         # using postgres dollar quotes on comment as some of the
         # comments contain single quotes
         tbl_comment_sql = "COMMENT ON TABLE " \
@@ -409,7 +409,7 @@ def make_table_mapping():
     model and thus speeds that creation process"""
 
     tbl_mapping = dict()
-    for schema_table in ops.metadata.tables:
+    for schema_table in gv.metadata.tables:
         table = schema_table.split('.')[1]
         model = table[:6]
         tbl_mapping[table] = model
@@ -420,28 +420,27 @@ def make_table_mapping():
 def main():
     """"""
 
-    global ops
+    # will be namespace for global variables
+    global gv
     args = sys.argv[1:]
-    ops = process_options(args)
+    gv = process_options(args)
 
-    pg_url = 'postgres://{user}:{pw}@{host}/{db}'.format(
-        user=ops.user, pw=ops.password, host=ops.host, db=ops.dbname)
-
-    ops.engine = create_engine(pg_url)
-    ops.lookup_file = 'ACS_{span}yr_Seq_Table_Number_' \
-                      'Lookup.txt'.format(span=ops.span)
-    ops.metadata = MetaData(
-        bind=ops.engine,
-        schema='acs{yr}_{span}yr'.format(yr=ops.acs_year,
-                                         span=ops.span))
+    pg_url = PG_URL.format(user=gv.user, pw=gv.password,
+                           host=gv.host, db=gv.dbname)
+    gv.engine = create_engine(pg_url)
+    gv.lookup_file = 'ACS_{span}yr_Seq_Table_Number_' \
+                     'Lookup.txt'.format(span=gv.span)
+    gv.metadata = MetaData(
+        bind=gv.engine,
+        schema=ACS_SCHEMA.format(yr=gv.acs_year, span=gv.span))
 
     download_acs_data()
     drop_create_acs_schema(True)
     create_geoheader()
     create_acs_tables()
 
-    if ops.model:
-        utils.generate_model(ops.metadata, make_table_mapping(), [GEOHEADER])
+    if gv.model:
+        utils.generate_model(gv.metadata, make_table_mapping(), [GEOHEADER])
 
 
 if __name__ == '__main__':
