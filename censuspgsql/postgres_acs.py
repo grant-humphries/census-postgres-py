@@ -408,6 +408,9 @@ def make_table_mapping():
     reduces the number of files that have to generated for the sqlalchemy
     model and thus speeds that creation process"""
 
+    if not gv.metadata.tables:
+        gv.metadata.reflect(schema=gv.metadata.schema)
+
     tbl_mapping = dict()
     for schema_table in gv.metadata.tables:
         table = schema_table.split('.')[1]
