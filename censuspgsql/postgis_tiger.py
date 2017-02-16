@@ -257,8 +257,8 @@ def process_options(arglist=None):
         default=None,
         type=int,
         dest='epsg',
-        help='TIGER data comes from the census bureau in the projection'
-             '4269, pass an EPSG code to this parameter to transform'
+        help='TIGER data comes from the census bureau in the projection '
+             '4269, pass an EPSG code to this parameter to transform '
              'the geometry to another spatial reference system'
     )
     parser.add_argument(
@@ -266,7 +266,7 @@ def process_options(arglist=None):
         default=True,
         dest='foreign_key',
         action='store_false',
-        help='by default a foreign key to the ACS data is created if that'
+        help='by default a foreign key to the ACS data is created if that '
              'data exists, use this flag to disable that constraint'
     )
     parser = utils.add_postgres_options(parser)

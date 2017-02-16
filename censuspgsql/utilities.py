@@ -167,7 +167,7 @@ def add_postgres_options(parser):
         '-p', '--password',
         required=pw_require,
         default=password,
-        help='postgres password for supplied user, if PGPASSWORD environment'
+        help='postgres password for supplied user, if PGPASSWORD environment '
              'variable is set it will be read from that setting'
     )
 

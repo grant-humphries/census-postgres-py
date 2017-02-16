@@ -1,17 +1,35 @@
 # census-postgres-py
-This project downloads data from the US Census Bureau's website, creates a schema and tables within a postgres database based on census metadata, and populates those tables from the downloaded data products.  The code is written solely in python and the entire process can be executed simply calling a script from the command line and providing a few parameters to that script.
+This project generates console scripts that download data from the US Census Bureau's website, create a schema and tables within a postgres database based on census metadata, and populate those tables with the downloaded data products.
 
 ## getting started
-If you don't have an existing database in which you would like a census data schema to be created, generate one from the command line using the following syntax (this assumes you have access to a postgres instance for which you have admin privileges):
+census-postgres-py is designed to use [buildout](https://pypi.python.org/pypi/zc.buildout) to fetch python package dependencies, if you don't have buildout installed use the following command to do so:
 
-```sh
+```bash
+pip install zc.buildout
+```
+
+This adds an executable called `buildout` to your PATH environment variable which can be used to setup a project specific instance of python equiped with all of the project's required packages (amd without installing them on your system python).  To generate a python interpreter for this project navigate to the home directory and enter the command:
+
+```bash
+buildout
+```
+
+This will start a process that writes a bunch of output in your terminal, take a look at the last few lines and make sure that it has succeeded.  If that's the case a folder called `bin` will have been created that contains a python instance and a couple of console scripts.  Before you can run those scripts you must first have a postgres database to hold the census data.  If you don't have one in place generate a new database from the command line using the following syntax (this assumes you have postgres and its command line tools installed and have admin privileges):
+
+```bash
 createdb -h your_host -U your_username census
 ```
 
-Once the database has been created, simply call the script similarly to the command below.  Use this command: `python postgres_acs_db.py --help` for further information on the parameters that can be supplied to the to the script.
+Now you can run the console script that will load ACS data using a command like the one below.  For further information on options available on this executable use: `postgres_acs --help` (not that this script is not added to your PATH so you'll need to use and absolute path or cd into the `bin` folder to execute it)
 
-```sh
-python postgres_acs_db.py -y 2014 -s OR WA -p your_pg_password
+```bash
+./bin/postgres_acs -y 2014 -s OR WA -p your_postgres_password
+```
+
+Generating and loading the tables will take at least a couple of hours.  If that successfully completes you can add the census bureau's spatial data (called TIGER) with a second console script.  Again the `--help` parameter can be used for instructions on its use and the command below would load 2015 Block Group and Tract geometries for Oregon and Washington (note that TIGER data is generally a released about a year sooner than ACS data):
+
+```bash
+./bin/postgis_tiger -y 2015 -s OR WA -dp bg t -p your_postgres_password
 ```
 
 ## sqlalchemy model
